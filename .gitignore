@@ -1,0 +1,24 @@
+# 環境変数（秘密情報）
+.env
+.env.*
+!.env.example
+
+# Railsの秘密鍵
+**/config/master.key
+**/config/credentials/*.key
+
+# Railsログ
+**/log/*
+!**/log/.keep
+
+# 一時ファイル
+**/tmp/*
+!**/tmp/.keep
+
+# ローカルストレージ
+**/storage/*
+!**/storage/.keep
+
+# ローカル環境
+**/.bundle/
+.DS_Store
