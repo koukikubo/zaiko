@@ -26,6 +26,8 @@ erDiagram
     stores ||--o{ positions : defines
     stores ||--o{ items : manages
     stores ||--o{ stock_locations : has
+    stores ||--o{ position_items : defines_usage
+    stores ||--o{ stock_location_items : defines_stock_targets
     stores ||--o{ inventory_counts : records
     stores ||--o{ loss_records : records
     stores ||--o{ audit_events : logs
@@ -111,6 +113,8 @@ erDiagram
     stores ||--o{ positions : defines
     stores ||--o{ items : manages
     stores ||--o{ stock_locations : has
+    stores ||--o{ position_items : defines_usage
+    stores ||--o{ stock_location_items : defines_stock_targets
 
     staffs ||--o{ oauth_identities : linked_to
     staffs ||--o{ position_assignments : assigned
@@ -164,12 +168,24 @@ erDiagram
         string name
     }
 
+    position_items {
+        bigint id PK
+        bigint store_id FK
+        bigint position_id FK
+        bigint item_id FK
+        boolean active
+        int lock_version
+    }
+
     stock_location_items {
         bigint id PK
+        bigint store_id FK
         bigint stock_location_id FK
         bigint item_id FK
         bigint responsible_position_id FK
         boolean active
+        int sort_order
+        int lock_version
     }
 
     inventory_counts {
@@ -217,24 +233,28 @@ erDiagram
 
 `inventory_counts` と `inventory_count_lines` は1対多。
 
-1回の棚卸に複数の食材明細が紐付く。
-
+1回の棚卸に複数の食材明細が紐つく。
 未確認の数量NULLと実測数量0は区別する。
 
 ### 発注と納品
 
 発注書から複数の発注明細を持てる。
-
 1件の発注に対して複数回の分納・検品が可能。
-
 在庫に反映するのは検品確定済みの数量のみ。
+
+### 店舗境界と複合FK
+
+- `position_items` と `stock_location_items` は `store_id` を保持する。
+- `position_items` は同一店舗の `positions` と `items` のみ参照できる。
+- `stock_location_items` は同一店舗の `stock_locations`、`items`、`positions` のみ参照できる。
+- 店舗の一致は `(store_id, 関連先ID)` の複合FKで保証する。
+- 詳細なUNIQUE制約とFK制約は `tables.md` を正本とする。
 
 ## 5. 未確定事項
 
 - Phase 1の棚卸ヘッダーの単位と複数回実施のルール
 - 保管場所別管理食材の責任ポジション変更履歴
 - 一部のFKの任意・必須条件
-- 店舗をまたぐ不正な関連の防止方法
 - 複数ポジションからの発注依頼の履歴管理
 - 在庫訂正専用テーブルの必要性
 
