@@ -231,3 +231,70 @@ Rails実装では `has_many :through` を使用する方針とする。
 | #9    | Phase 3の認証セッション管理                |
 
 本書は論理設計案であり、Rails ModelやMigrationが実装されたことを意味しない。
+
+### ポジション担当履歴の店舗境界
+
+- `position_assignments.store_id` → `stores.id`
+- `(store_id, staff_id)` → `staffs(store_id, id)`
+- `(store_id, position_id)` → `positions(store_id, id)`
+- `(store_id, assigned_by_id)` → `staffs(store_id, id)`（登録者がいる場合）
+
+スタッフとポジションは、所属店舗が一致する場合のみ関連付けられる。
+
+スタッフとポジションの多対多は、担当期間を持つ
+`position_assignments` を介して表現する。
+
+同一スタッフによる複数ポジションの兼務は許可する。
+同一スタッフ・同一ポジションの担当期間重複は禁止する。
+
+担当ポジションは発注承認権限とは独立する。
+
+## 11. Issue #4 スタッフ自己登録と認証の関連
+
+### Phase 1の運用
+
+- 運用店舗はシステム初期設定済みの1店舗とする。
+- スタッフはアプリから本人が自己登録する。
+- スタッフ登録時の所属店舗はRails側で決定する。
+- 将来の複数店舗運用を見据え、store_idは維持する。
+
+### スタッフとGoogle認証
+
+- storesは複数のstaffsを持つ。
+- staffsはoauth_identitiesと関連する。
+- 自己登録ではstaffsとoauth_identitiesを同一トランザクションで作成する。
+- UNIQUE(issuer, subject)で同一Googleアカウントの重複を禁止する。
+- UNIQUE(staff_id, provider)で同一スタッフへの複数Googleアカウント登録を禁止する。
+
+### 登録時の認可
+
+- Google認証だけでは店舗参加を許可しない。
+- Railsが既存店舗の参加コードを検証する。
+- 新規スタッフにはstaff権限だけを付与する。
+- 管理者権限は自己登録で付与しない。
+- スタッフ停止・退職後はAPIアクセスを拒否する。
+- 初期管理者はシステム導入時に別の安全な手順で設定する。
+
+### ポジション別発注承認権限
+
+`position_approval_authorizations` は、
+スタッフと承認対象ポジションの権限関係を管理する。
+
+関連：
+
+- `store_id` → `stores.id`
+- `(store_id, staff_id)` → `staffs(store_id, id)`
+- `(store_id, position_id)` → `positions(store_id, id)`
+- `(store_id, granted_by_id)` → `staffs(store_id, id)`
+
+業務上の関係：
+
+- 1店舗は複数の発注承認権限を持つ。
+- 1人のスタッフは複数ポジションの承認権限を持てる。
+- 1ポジションは複数の承認可能スタッフを持てる。
+- 権限付与者もスタッフとして記録する。
+- 担当ポジションと発注承認権限は独立する。
+- 現在の所属店舗が一致しない権限付与は禁止する。
+
+Phase 1では関連構造を設計するのみとし、
+本テーブルの実装はPhase 2で行う。

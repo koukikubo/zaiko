@@ -49,98 +49,420 @@
 
 ## 2. `stores`（店舗マスタ）
 
-**責務：** 店舗の基本情報を管理する。
+**責務：** 店舗の基本情報・利用状態を管理する。
 
-| カラム名   | 日本語名     | 型          | NULL | DEFAULT    | Option |
-| ---------- | ------------ | ----------- | ---- | ---------- | ------ |
-| `code`     | 店舗コード   | string(30)  | 不可 | —          | UNIQUE |
-| `name`     | 店舗名       | string(150) | 不可 | —          |        |
-| `timezone` | タイムゾーン | string(50)  | 不可 | Asia/Tokyo |        |
-| `active`   | 利用状態     | boolean     | 不可 | true       |        |
+**作成・更新主体：** システム管理者
 
-**制約・備考**
+| カラム名               | 日本語名             | 型          | NULL | DEFAULT    | Option | 設定元   |
+| ---------------------- | -------------------- | ----------- | ---- | ---------- | ------ | -------- |
+| `id`                   | 店舗ID               | bigint      | 不可 | DB採番     | PK     | DB       |
+| `code`                 | 店舗コード           | string(30)  | 不可 | —          | UNIQUE | 管理者   |
+| `name`                 | 店舗名               | string(150) | 不可 | —          | —      | 管理者   |
+| `timezone`             | タイムゾーン         | string(50)  | 不可 | Asia/Tokyo | —      | システム |
+| `active`               | 利用状態             | boolean     | 不可 | true       | —      | 管理者   |
+| `join_code_digest`     | 参加コードのハッシュ | string(255) | 可   | NULL       | —      | Rails    |
+| `join_code_expires_at` | 参加コードの期限     | datetime(6) | 可   | NULL       | —      | Rails    |
+| `join_code_enabled`    | 自己登録の許可       | boolean     | 不可 | false      | —      | 管理者   |
+| `created_at`           | 作成日時             | datetime(6) | 不可 | —          | —      | Rails    |
+| `updated_at`           | 更新日時             | datetime(6) | 不可 | —          | —      | Rails    |
 
-- `code` は店舗識別に使用し、一意とする。
-- 他の業務データから参照されるため、通常は物理削除しない。
-- 初期運用は1店舗だが、将来の複数店舗に対応できる構造とする。
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `UNIQUE(code)`
+- `CHECK(btrim(code) <> '')`
+- `CHECK(btrim(name) <> '')`
+- `CHECK(join_code_enabled = false OR (join_code_digest IS NOT NULL AND join_code_expires_at IS NOT NULL))`
+
+### 業務ルール
+
+- 初期段階は1店舗で運用する。
+- 将来の複数店舗運用を想定して店舗IDを保持する。
+- 利用停止した店舗のスタッフはAPIを利用できない。
+- スタッフ・食材・棚卸履歴が存在する店舗は原則物理削除しない。
+- タイムゾーンはIANA識別子を使用する。
+- 店舗コードの大文字・小文字は登録前に正規化する方針とする。
+
+### 関連
+
+- `has_many :staffs`
+- `has_many :positions`
+- `has_many :items`
+- `has_many :stock_locations`
+
+### Phase 1の店舗運用方針
+
+- Phase 1で運用する店舗は1店舗のみとする。
+- 店舗はシステム初期設定時に登録し、一般利用者は作成できない。
+- 新規店舗登録API・店舗選択画面はPhase 1では実装しない。
+- 初期管理者はシステム導入時に安全な初期設定手順で登録する。
+- 一般スタッフは既存店舗へ自己登録する。
+- スタッフの新規登録時、所属店舗はRails側で決定する。
+- クライアントから任意のstore_idを受け付けない。
+- stores.idと各テーブルのstore_idは将来の複数店舗対応のため維持する。
+- 将来の複数店舗対応では、店舗の識別・管理・所属ルールを拡張する。
+
+### 店舗参加コード
+
+- 既存店舗のスタッフ自己登録に使用する。
+- 個別招待メール・管理者の個別承認は不要とする。
+- 参加コードは十分な乱数を使って生成する。
+- 原文は保存せず、安全なハッシュ値を保存する。
+- 有効期限・無効化・再生成に対応する。
+- 不正な試行を防ぐためレート制限を設ける。
+- 店舗コードと参加コードは別の情報として扱う。
 
 ## 3. `staffs`（スタッフマスタ）
 
-**責務：** スタッフの在籍状態・基本権限を管理する。
+**責務：** スタッフの所属店舗、基本権限、在籍状態を管理する。
 
-| カラム名       | 日本語名       | 型          | NULL | DEFAULT | Option      |
-| -------------- | -------------- | ----------- | ---- | ------- | ----------- |
-| `store_id`     | 所属店舗ID     | bigint      | 不可 | —       | FK → stores |
-| `code`         | スタッフコード | string(30)  | 不可 | —       |             |
-| `name`         | スタッフ名     | string(100) | 不可 | —       |             |
-| `role_code`    | 基本権限       | string(30)  | 不可 | staff   | CHECK候補   |
-| `status`       | 在籍・利用状態 | string(30)  | 不可 | active  | CHECK候補   |
-| `retired_at`   | 退職日時       | datetime    | 可   | —       |             |
-| `lock_version` | 更新バージョン | integer     | 不可 | 0       | 楽観ロック  |
+**作成主体：**
 
-**制約・備考**
+- 一般スタッフ：既存店舗への自己登録処理
+- 初期管理者：システム導入時の初期設定処理
+- その他：管理権限を持つスタッフ
 
+**更新主体：**
+
+- 本人：許可されたプロフィール項目
+- 店舗管理者：基本権限・利用状態・担当管理
+- Rails：認証関連のシステム管理項目
+
+**自己登録時のルール：**
+
+- 既存の1店舗にのみ登録する。
+- 所属店舗はRails側で決定する。
+- `code` はRailsが店舗内で一意に生成する。
+- `role_code` は必ず `staff` とする。
+- `status` は `active` とする。
+- 一般利用者が `admin` や `manager` を指定することは禁止する。
+- Google認証と店舗参加コードの検証後に登録する。
+- スタッフ作成とOAuth紐付けは同一トランザクションで行う。
+
+| カラム名       | 日本語名           | 型          | NULL | DEFAULT | Option      | 設定元 |
+| -------------- | ------------------ | ----------- | ---- | ------- | ----------- | ------ |
+| `id`           | スタッフID         | bigint      | 不可 | DB採番  | PK          | DB     |
+| `store_id`     | 所属店舗ID         | bigint      | 不可 | —       | FK → stores | Rails  |
+| `code`         | スタッフコード     | string(30)  | 不可 | —       | 複合UNIQUE  | Rails  |
+| `name`         | スタッフ名         | string(100) | 不可 | —       | —           | 管理者 |
+| `role_code`    | 基本権限           | string(30)  | 不可 | staff   | CHECK       | 管理者 |
+| `status`       | 利用状態           | string(30)  | 不可 | active  | CHECK       | 管理者 |
+| `retired_at`   | 退職日時           | datetime(6) | 可   | NULL    | —           | Rails  |
+| `lock_version` | 更新バージョン     | integer     | 不可 | 0       | 楽観ロック  | Rails  |
+| `auth_version` | 認証失効バージョン | integer     | 不可 | 0       | CHECK       | Rails  |
+| `created_at`   | 作成日時           | datetime(6) | 不可 | —       | —           | Rails  |
+| `updated_at`   | 更新日時           | datetime(6) | 不可 | —       | —           | Rails  |
+
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(store_id) REFERENCES stores(id)`
 - `UNIQUE(store_id, code)`
-- `role_code` の候補：`staff / manager / admin`
-- `status` の候補：`active / suspended / retired`
-- 退職したスタッフも棚卸・承認履歴のために残す。
-- Google認証の情報は `oauth_identities` へ分離する。
+- `INDEX(store_id, status)`
+- `CHECK(btrim(code) <> '')`
+- `CHECK(btrim(name) <> '')`
+- `CHECK(role_code IN ('staff', 'manager', 'admin'))`
+- `CHECK(status IN ('active', 'suspended', 'retired'))`
+- `CHECK(status <> 'retired' OR retired_at IS NOT NULL)`
+- `CHECK(auth_version >= 0)`
+- `UNIQUE(store_id, id)`：店舗一致を検証する複合FKの参照先
+
+### 基本権限
+
+| role_code | 日本語名     | 主な役割                     |
+| --------- | ------------ | ---------------------------- |
+| `staff`   | 一般スタッフ | 担当業務・在庫確認           |
+| `manager` | 管理スタッフ | スタッフ管理・業務管理の一部 |
+| `admin`   | 店舗管理者   | 店舗内の管理操作             |
+
+具体的な操作権限は後続の認可設計で確定する。
+
+### 利用状態
+
+| status      | 日本語名 | API利用          |
+| ----------- | -------- | ---------------- |
+| `active`    | 有効     | 権限に応じて許可 |
+| `suspended` | 利用停止 | 拒否             |
+| `retired`   | 退職     | 拒否             |
+
+### 業務ルール
+
+- スタッフは必ず1店舗に所属する。
+- スタッフコードは同じ店舗内で一意とする。
+- 異なる店舗では同じスタッフコードを使用できる。
+- 退職時はstatusをretiredに更新し、retired_atを記録する。
+- 退職しても棚卸・発注・監査の履歴を保持する。
+- 利用停止・退職済みスタッフのAPIアクセスを拒否する。
+- Google認証成功だけでは利用を許可せず、スタッフの有効状態を検証する。
+- 基本権限とポジション別発注承認権限を混同しない。
+- スタッフの更新競合はlock_versionで検出する。
+- 再雇用・復職時の過去の退職日時の扱いは、監査履歴と合わせて別途確定する。
+
+### 関連
+
+- `belongs_to :store`
+- `has_many :oauth_identities`
+- `has_many :position_assignments`
+- `has_many :inventory_counts`（作成者・確定者の関連を区別）
+- `has_many :inventory_count_lines`（棚卸実施者・入力者の関連を区別）
 
 ## 4. `oauth_identities`（外部認証アカウント）
 
-**責務：** GoogleアカウントとZAIKOのスタッフを紐付ける。
+**責務：** GoogleアカウントとZAIKOのスタッフを安全に紐付ける。
 
-| カラム名         | 日本語名               | 型          | NULL | DEFAULT | Option      |
-| ---------------- | ---------------------- | ----------- | ---- | ------- | ----------- |
-| `staff_id`       | スタッフID             | bigint      | 不可 | —       | FK → staffs |
-| `provider`       | 認証プロバイダー       | string(30)  | 不可 | google  |             |
-| `issuer`         | トークン発行元         | string(255) | 不可 | —       |             |
-| `subject`        | 外部ユーザー識別子     | string(255) | 不可 | —       |             |
-| `email_snapshot` | 紐付け時メールアドレス | string(255) | 可   | —       |             |
-| `linked_at`      | 紐付け日時             | datetime    | 不可 | —       |             |
+**作成・更新主体：** Railsの認証・アカウント紐付け処理
 
-**制約・備考**
+**実装フェーズ：** Phase 1-A
 
+| カラム名         | 日本語名               | 型          | NULL | DEFAULT | Option      | 設定元          |
+| ---------------- | ---------------------- | ----------- | ---- | ------- | ----------- | --------------- |
+| `id`             | 外部認証ID             | bigint      | 不可 | DB採番  | PK          | DB              |
+| `staff_id`       | スタッフID             | bigint      | 不可 | —       | FK → staffs | Rails           |
+| `provider`       | 認証プロバイダー       | string(30)  | 不可 | google  | CHECK       | Rails           |
+| `issuer`         | トークン発行元         | string(255) | 不可 | —       | 複合UNIQUE  | Google ID Token |
+| `subject`        | Googleユーザー識別子   | string(255) | 不可 | —       | 複合UNIQUE  | Google ID Token |
+| `email_snapshot` | 紐付け時メールアドレス | string(255) | 可   | NULL    | —           | Google ID Token |
+| `linked_at`      | 紐付け日時             | datetime(6) | 不可 | —       | —           | Rails           |
+| `created_at`     | 作成日時               | datetime(6) | 不可 | —       | —           | Rails           |
+| `updated_at`     | 更新日時               | datetime(6) | 不可 | —       | —           | Rails           |
+
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(staff_id) REFERENCES staffs(id)`
 - `UNIQUE(issuer, subject)`
-- Googleアカウントの識別にはメールアドレスではなく、検証済みID Tokenの `iss` と `sub` を使用する。
-- メールアドレスが一致しただけでは自動的にスタッフへ紐付けない。
-- Googleのアクセストークンやリフレッシュトークンを安易にDB保存しない。
-- Phase 1では独立した `auth_sessions` テーブルを作らない。
+- `UNIQUE(staff_id, provider)`
+- `CHECK(provider = 'google')`
+- `CHECK(btrim(issuer) <> '')`
+- `CHECK(btrim(subject) <> '')`
+
+### 一意性の考え方
+
+`UNIQUE(issuer, subject)` により、同じGoogleアカウントを複数スタッフへ登録できないようにする。
+
+`UNIQUE(staff_id, provider)` により、1スタッフに同じプロバイダーのアカウントを複数登録できないようにする。
+
+将来、複数のGoogleアカウントを1スタッフが利用できる仕様にする場合は、後者の制約を見直す。
+
+### Googleアカウントの識別
+
+- Googleの識別子には検証済みID Tokenの `iss` と `sub` を使用する。
+- Googleが許可するissuer表記を検証後、DB登録時には `https://accounts.google.com` に正規化する。
+- `email_snapshot` は表示・監査の補助情報であり、ログイン時の識別には使用しない。
+- メールアドレスが一致しただけでは、既存スタッフに自動紐付けしない。
+
+### 初回紐付けの原則
+
+Phase 1では、既存の1店舗へスタッフ本人が自己登録する。
+
+1. スタッフ本人がGoogle認証を行う。
+2. RailsがGoogle ID Tokenを検証する。
+3. 検証済みのissuer・subjectで登録済みアカウントを検索する。
+4. 未登録の場合、スタッフ名と店舗参加コードを受け付ける。
+5. Railsが対象の既存店舗と参加コードを検証する。
+6. 同一DBトランザクションでstaffsとoauth_identitiesを作成する。
+7. 登録成功後、ZAIKO API用の認証情報を発行する。
+8. 一般スタッフとしてログイン状態へ遷移する。
+
+**制約：**
+
+- 個別招待メールは使用しない。
+- 管理者による個別承認は不要とする。
+- Google認証だけで既存店舗に参加できない。
+- 参加コードを知らない利用者は登録できない。
+- 管理者権限を自己登録で取得できない。
+- メールアドレス一致による自動紐付けは禁止する。
+- 登録済みのGoogleアカウントは新規作成せず通常ログインする。
+- 紐付け時には監査イベントを記録する。
+
+### セキュリティ要件
+
+- Google ID Tokenの署名を検証する。
+- issuer、audience、有効期限を検証する。
+- state・nonce・PKCEを認証フローに応じて検証する。
+- 未登録スタッフの利用を禁止する。
+- suspended・retiredのスタッフの利用を禁止する。
+- 所属店舗が無効化されている場合も利用を禁止する。
+- Googleのアクセストークン・リフレッシュトークンを本テーブルに保存しない。
+- アカウント紐付け・変更・解除は監査対象とする。
+
+### 削除・変更方針
+
+- スタッフ退職時にGoogleアカウントの紐付け履歴を無条件に削除しない。
+- アカウント変更時は管理者の承認と監査記録を必要とする。
+- 認証情報の変更・解除後に古い認証情報が再利用されないことを保証する。
+- 再紐付けの方法はIssue #4で確定する。
+
+### アソシエーション
+
+- `belongs_to :staff`
+- `staffs` 側は `has_many :oauth_identities` を基本とする。
+- 現行の1プロバイダー1アカウント制約はDBのUNIQUEで保証する。
+
+### Phase 3との境界
+
+- `auth_sessions` はPhase 3で実装する。
+- Phase 1のGoogle認証とAPI認可は省略しない。
+- 端末別の強制ログアウトはPhase 3で実装する。
 
 ## 5. `positions`（ポジションマスタ）
 
 **責務：** 揚場・焼場・造り場などの担当区分を管理する。
 
-| カラム名     | 日本語名         | 型          | NULL | DEFAULT | Option      |
-| ------------ | ---------------- | ----------- | ---- | ------- | ----------- |
-| `store_id`   | 店舗ID           | bigint      | 不可 | —       | FK → stores |
-| `code`       | ポジションコード | string(30)  | 不可 | —       |             |
-| `name`       | ポジション名     | string(100) | 不可 | —       |             |
-| `sort_order` | 表示順           | integer     | 不可 | 0       |             |
-| `active`     | 有効状態         | boolean     | 不可 | true    |             |
+**作成・更新主体：** 店舗管理者
 
-**制約・備考**
+**実装フェーズ：** Phase 1
 
+| カラム名       | 日本語名         | 型          | NULL | DEFAULT | Option      | 設定元 |
+| -------------- | ---------------- | ----------- | ---- | ------- | ----------- | ------ |
+| `id`           | ポジションID     | bigint      | 不可 | DB採番  | PK          | DB     |
+| `store_id`     | 店舗ID           | bigint      | 不可 | —       | FK → stores | Rails  |
+| `code`         | ポジションコード | string(30)  | 不可 | —       | 複合UNIQUE  | 管理者 |
+| `name`         | ポジション名     | string(100) | 不可 | —       | —           | 管理者 |
+| `sort_order`   | 表示順           | integer     | 不可 | 0       | CHECK       | 管理者 |
+| `active`       | 有効状態         | boolean     | 不可 | true    | —           | 管理者 |
+| `lock_version` | 更新バージョン   | integer     | 不可 | 0       | 楽観ロック  | Rails  |
+| `created_at`   | 作成日時         | datetime(6) | 不可 | —       | —           | Rails  |
+| `updated_at`   | 更新日時         | datetime(6) | 不可 | —       | —           | Rails  |
+
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(store_id) REFERENCES stores(id)`
 - `UNIQUE(store_id, code)`
-- 担当履歴を保持するため、使用済みポジションは原則無効化で対応する。
+- `UNIQUE(store_id, id)`：店舗一致を保証する複合FKの参照先
+- `CHECK(btrim(code) <> '')`
+- `CHECK(btrim(name) <> '')`
+- `CHECK(sort_order >= 0)`
+- `INDEX(store_id, active, sort_order)`
+
+### 業務ルール
+
+- ポジションは必ず1店舗に所属する。
+- 同一店舗内のポジションコードは重複させない。
+- 異なる店舗では同じポジションコードを使用できる。
+- 1つのポジションには複数スタッフを割り当てられる。
+- 1人のスタッフが複数ポジションを兼務できる。
+- 過去の担当履歴があるポジションは原則物理削除しない。
+- `active = false` のポジションには新規担当を割り当てない。
+- 無効化しても過去の担当履歴は保持する。
+- ポジションの無効化に伴う既存担当の終了処理はServiceで管理する。
+- ポジションの変更競合は `lock_version` で検出する。
+- 担当ポジションと発注承認権限は別の情報として扱う。
+
+### アソシエーション
+
+- `belongs_to :store`
+- `has_many :position_assignments`
+- `has_many :staffs, through: :position_assignments`
+- `has_many :position_items`
+
+※履歴があるため、スタッフ取得時には担当期間を条件に含める。
 
 ## 6. `position_assignments`（ポジション担当履歴）
 
-**責務：** 誰が、いつ、どのポジションを担当したか記録する。
+**責務：** スタッフが担当したポジションと、その担当期間を記録する。
 
-| カラム名         | 日本語名       | 型     | NULL | DEFAULT | Option         |
-| ---------------- | -------------- | ------ | ---- | ------- | -------------- |
-| `staff_id`       | スタッフID     | bigint | 不可 | —       | FK → staffs    |
-| `position_id`    | ポジションID   | bigint | 不可 | —       | FK → positions |
-| `started_on`     | 担当開始日     | date   | 不可 | —       |                |
-| `ended_on`       | 担当終了日     | date   | 可   | —       |                |
-| `assigned_by_id` | 登録スタッフID | bigint | 可   | —       | FK → staffs    |
+**作成・更新主体：** 店舗管理者
 
-**制約・備考**
+**実装フェーズ：** Phase 1
 
+| カラム名         | 日本語名       | 型          | NULL | DEFAULT | Option             | 設定元 |
+| ---------------- | -------------- | ----------- | ---- | ------- | ------------------ | ------ |
+| `id`             | 担当履歴ID     | bigint      | 不可 | DB採番  | PK                 | DB     |
+| `store_id`       | 店舗ID         | bigint      | 不可 | —       | FK → stores        | Rails  |
+| `staff_id`       | スタッフID     | bigint      | 不可 | —       | 複合FK → staffs    | 管理者 |
+| `position_id`    | ポジションID   | bigint      | 不可 | —       | 複合FK → positions | 管理者 |
+| `started_on`     | 担当開始日     | date        | 不可 | —       | CHECK・EXCLUDE     | 管理者 |
+| `ended_on`       | 担当終了日     | date        | 可   | NULL    | CHECK・EXCLUDE     | 管理者 |
+| `assigned_by_id` | 登録スタッフID | bigint      | 可   | NULL    | 複合FK → staffs    | Rails  |
+| `lock_version`   | 更新バージョン | integer     | 不可 | 0       | 楽観ロック         | Rails  |
+| `created_at`     | 作成日時       | datetime(6) | 不可 | —       | —                  | Rails  |
+| `updated_at`     | 更新日時       | datetime(6) | 不可 | —       | —                  | Rails  |
+
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(store_id) REFERENCES stores(id)`
+- `FOREIGN KEY(store_id, staff_id) REFERENCES staffs(store_id, id)`
+- `FOREIGN KEY(store_id, position_id) REFERENCES positions(store_id, id)`
+- `FOREIGN KEY(store_id, assigned_by_id) REFERENCES staffs(store_id, id)`
 - `CHECK(ended_on IS NULL OR ended_on >= started_on)`
-- 担当期間の重複許可・禁止ルールはIssue #4で確定する。
-- 担当履歴と発注承認権限は別の情報として扱う。
+- `INDEX(store_id, started_on)`
+- `INDEX(staff_id, started_on)`
+
+複合FKの参照先となる `staffs(store_id, id)` と
+`positions(store_id, id)` には、
+対応するUNIQUE制約を定義する。
+
+### 担当期間のルール
+
+- `started_on` は担当開始日とする。
+- `ended_on` は担当終了日とし、その日も担当期間に含む。
+- `ended_on = NULL` は終了日未定を意味する。
+- 1人のスタッフが同時期に複数ポジションを担当することを許可する。
+- 1つのポジションを同時期に複数スタッフが担当することを許可する。
+- 同一スタッフ・同一ポジションで期間が重複する登録は禁止する。
+- 担当期間が終了した後は、同じポジションに再び担当登録できる。
+- 担当履歴は原則物理削除せず、期間を修正する場合は監査履歴を残す。
+
+### 担当期間の重複防止
+
+PostgreSQLの `daterange` と `EXCLUDE` 制約を使用する。
+
+判定対象：
+
+- `staff_id`
+- `position_id`
+- `daterange(started_on, ended_on, '[]')`
+
+同一スタッフ・同一ポジションの期間が重なる場合は、
+DB制約で登録・更新を拒否する。
+
+実装時には `btree_gist` 拡張とGiSTインデックスを使用する。
+Migrationの具体的な記述は実装Issueで確定する。
+
+### 店舗境界
+
+- スタッフ・ポジション・登録者は同一店舗に所属すること。
+- `store_id` は対象スタッフの店舗からRails側で設定する。
+- クライアントから指定された店舗IDは信用しない。
+- Railsの認可に加えて、複合FKで店舗間の不正な関連を防ぐ。
+- 別店舗への異動は単純な `store_id` 更新では扱わず、スタッフ所属設計と合わせて別途検討する。
+
+### 無効化・退職時の扱い
+
+- 退職済みスタッフへの新規担当登録は禁止する。
+- 無効化されたポジションへの新規担当登録は禁止する。
+- 退職後も過去の担当履歴は保持する。
+- 退職時に未終了の担当期間を終了する処理をServiceで行う。
+- 登録者IDは通常Railsで設定する。既存データの移行等は例外としてNULLを許可する。
+
+### 代理棚卸
+
+- 担当ポジションと実際の棚卸実施者は別に管理する。
+- `position_assignments` の存在だけで代理棚卸権限を与えない。
+- 代理棚卸を許可する条件は認可設計で判断する。
+- 実際に数えたスタッフと日時は `inventory_count_lines` に記録する。
+
+### アソシエーション
+
+- `belongs_to :store`
+- `belongs_to :staff`
+- `belongs_to :position`
+- `belongs_to :assigned_by, class_name: "Staff", optional: true`
+
+スタッフ側：
+
+- `has_many :position_assignments`
+- `has_many :positions, through: :position_assignments`
+
+ポジション側：
+
+- `has_many :position_assignments`
+- `has_many :staffs, through: :position_assignments`
+
+※Railsの関連定義とDBの複合FKは別途設定する。
 
 ## 7. `items`（食材・商品マスタ）
 
@@ -331,25 +653,138 @@
 
 以下の定義は**拡張時の整合性を確認するための暫定案**。Phase 2の詳細設計で確定する。
 
-## 15. `position_approval_authorizations`（ポジション別承認権限）
+## 15. `position_approval_authorizations`（ポジション別発注承認権限）
 
-**責務：** スタッフが発注を承認できるポジションと有効期間を管理する。
+**責務：** スタッフが発注を承認できるポジションと、その権限の有効期間を管理する。
 
-| カラム名        | 日本語名             | 型       | NULL | DEFAULT | Option         |
-| --------------- | -------------------- | -------- | ---- | ------- | -------------- |
-| `staff_id`      | 承認可能スタッフID   | bigint   | 不可 | —       | FK → staffs    |
-| `position_id`   | 承認対象ポジションID | bigint   | 不可 | —       | FK → positions |
-| `granted_by_id` | 権限付与者ID         | bigint   | 不可 | —       | FK → staffs    |
-| `starts_at`     | 権限開始日時         | datetime | 不可 | —       |                |
-| `ends_at`       | 権限終了日時         | datetime | 可   | —       |                |
-| `revoked_at`    | 権限失効日時         | datetime | 可   | —       |                |
-| `memo`          | 付与理由等           | text     | 可   | —       |                |
+**作成・更新主体：** 店舗管理者・権限を持つ管理スタッフ
 
-**制約・備考**
+**実装フェーズ：** Phase 2
 
-- 開始・終了日時の前後関係を検証する。
-- 同じスタッフ・ポジションに対する有効な権限の重複防止方法を決める。
-- 現在の担当ポジションと承認権限は分離する。
+| カラム名        | 日本語名             | 型          | NULL | DEFAULT | Option             | 設定元 |
+| --------------- | -------------------- | ----------- | ---- | ------- | ------------------ | ------ |
+| `id`            | 承認権限ID           | bigint      | 不可 | DB採番  | PK                 | DB     |
+| `store_id`      | 店舗ID               | bigint      | 不可 | —       | FK → stores        | Rails  |
+| `staff_id`      | 承認対象スタッフID   | bigint      | 不可 | —       | 複合FK → staffs    | 管理者 |
+| `position_id`   | 承認対象ポジションID | bigint      | 不可 | —       | 複合FK → positions | 管理者 |
+| `granted_by_id` | 権限付与者ID         | bigint      | 不可 | —       | 複合FK → staffs    | Rails  |
+| `starts_at`     | 権限開始日時         | datetime(6) | 不可 | —       | CHECK・EXCLUDE     | 管理者 |
+| `ends_at`       | 権限終了日時         | datetime(6) | 可   | NULL    | CHECK・EXCLUDE     | 管理者 |
+| `revoked_at`    | 権限失効日時         | datetime(6) | 可   | NULL    | —                  | Rails  |
+| `memo`          | 付与理由             | text        | 可   | NULL    | —                  | 管理者 |
+| `created_at`    | 作成日時             | datetime(6) | 不可 | —       | —                  | Rails  |
+| `updated_at`    | 更新日時             | datetime(6) | 不可 | —       | —                  | Rails  |
+
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(store_id) REFERENCES stores(id)`
+- `FOREIGN KEY(store_id, staff_id) REFERENCES staffs(store_id, id)`
+- `FOREIGN KEY(store_id, position_id) REFERENCES positions(store_id, id)`
+- `FOREIGN KEY(store_id, granted_by_id) REFERENCES staffs(store_id, id)`
+- `CHECK(ends_at IS NULL OR ends_at > starts_at)`
+- `INDEX(store_id, staff_id, position_id)`
+
+複合FKの参照先には、以下のUNIQUE制約を設ける。
+
+- `staffs(store_id, id)`
+- `positions(store_id, id)`
+
+参照先の削除は原則RESTRICTとする。
+
+### 有効期間のルール
+
+- `starts_at` は権限開始日時。
+- `ends_at` は権限終了日時。
+- `ends_at = NULL` は終了日時未定。
+- 開始日時を含み、終了日時は含まない。
+- `revoked_at = NULL` は未失効を意味する。
+- `revoked_at` が設定された権限は失効済みとする。
+- 失効日時はRailsがサーバー時刻で記録する。
+- 失効済みの権限レコードは履歴として保持する。
+- 失効済みレコードの再有効化はせず、新しい権限を登録する。
+
+### 期間の重複防止
+
+同一スタッフ・同一ポジションに対して、
+未失効の権限の有効期間が重複することを禁止する。
+
+PostgreSQLの `tsrange` と `EXCLUDE` 制約を採用する。
+
+比較対象：
+
+- `staff_id`
+- `position_id`
+- `tsrange(starts_at, ends_at, '[)')`
+
+条件：
+
+- `revoked_at IS NULL` の権限を対象とする。
+
+実装では `btree_gist` 拡張を使用する。
+
+失効済みの権限は重複制約の対象外とするが、
+監査履歴は削除しない。
+
+日時は原則UTCで保存する。
+Railsのdatetime(6)をPostgreSQLのtimestamp without time zone
+として保存する前提でtsrangeを使用する。
+
+### 発注承認の業務ルール
+
+- 1人のスタッフは複数ポジションの承認権限を持てる。
+- 1つのポジションに複数の承認者を設定できる。
+- 担当していないポジションでも、明示的に権限が付与されていれば承認できる。
+- position_assignmentsの登録だけでは承認できない。
+- 承認権限の付与・失効はmanagerまたはadminが行う。
+- 権限付与者自身の所属店舗と、対象スタッフ・ポジションの店舗が一致する必要がある。
+- 承認スタッフはactive状態でなければならない。
+- 店舗がactive状態でなければ承認できない。
+- adminであることだけを理由に、全ポジションの発注承認権限を自動付与しない。
+- 発注作成者による自己承認は、adminを含めて禁止する。
+
+### 発注承認時の検証条件
+
+承認処理では以下をすべて確認する。
+
+1. 認証済みスタッフが有効である。
+2. 所属店舗が有効である。
+3. 発注書の店舗とスタッフの所属店舗が一致する。
+4. 発注書の対象ポジションに承認権限が存在する。
+5. starts_atが現在日時以前である。
+6. ends_atがNULL、または現在日時より後である。
+7. revoked_atがNULLである。
+8. 発注作成者と承認者が異なる。
+9. 発注書が承認可能な状態である。
+
+### 監査
+
+以下の操作をaudit_eventsへ記録する。
+
+- 承認権限の付与
+- 承認権限の変更
+- 承認権限の失効
+- 発注の承認操作
+
+権限変更の監査では、実行者・対象者・対象ポジション・
+変更日時・変更前後の情報を追跡可能にする。
+
+### Phase 1との境界
+
+- 本テーブルのMigration・Model・Service・APIはPhase 2で実装する。
+- Phase 1ではポジション担当履歴のみを管理する。
+- 発注承認権限はposition_assignmentsから自動生成しない。
+- Phase 1の認証基盤とスタッフの有効状態はPhase 2でも利用する。
+
+### アソシエーション
+
+- `belongs_to :store`
+- `belongs_to :staff`
+- `belongs_to :position`
+- `belongs_to :granted_by, class_name: "Staff"`
+
+Rails Modelでの複合FKと関連定義の具体的な設定は、
+Phase 2の実装Issueで確認する。
 
 ## 16. `stock_transfers`（在庫移動履歴）
 
@@ -648,34 +1083,34 @@
 各テーブルの作成・更新を行う主体を以下に整理する。
 権限の具体的な判定条件は、後続Issueで詳細化する。
 
-| Phase | テーブル                           | 作成主体               | 更新主体                   |
-| ----- | ---------------------------------- | ---------------------- | -------------------------- |
-| 1     | `stores`                           | システム管理者         | システム管理者             |
-| 1     | `staffs`                           | 店舗管理者             | 店舗管理者                 |
-| 1     | `oauth_identities`                 | 認証・紐付け処理       | 認証・紐付け管理処理       |
-| 1     | `positions`                        | 店舗管理者             | 店舗管理者                 |
-| 1     | `position_assignments`             | 店舗管理者             | 店舗管理者                 |
-| 1     | `items`                            | 店舗管理者             | 店舗管理者                 |
-| 1     | `position_items`                   | 店舗管理者             | 店舗管理者                 |
-| 1     | `stock_locations`                  | 店舗管理者             | 店舗管理者                 |
-| 1     | `stock_location_items`             | 店舗管理者             | 店舗管理者                 |
-| 1     | `inventory_counts`                 | 権限を持つスタッフ     | 権限を持つスタッフ・確定者 |
-| 1     | `inventory_count_lines`            | 棚卸実施・入力スタッフ | 棚卸実施・入力スタッフ     |
-| 1     | `loss_records`                     | 権限を持つスタッフ     | 権限を持つスタッフ         |
-| 1     | `audit_events`                     | Railsの監査記録処理    | 原則更新禁止               |
-| 2     | `position_approval_authorizations` | 店舗管理者             | 店舗管理者                 |
-| 2     | `stock_transfers`                  | 権限を持つスタッフ     | 原則訂正履歴で対応         |
-| 2     | `suppliers`                        | 店舗管理者             | 店舗管理者                 |
-| 2     | `supplier_items`                   | 店舗管理者             | 店舗管理者                 |
-| 2     | `purchase_orders`                  | 発注担当スタッフ       | 発注担当者・承認処理       |
-| 2     | `purchase_order_lines`             | 発注担当スタッフ       | 発注確定前の担当者         |
-| 2     | `order_approval_events`            | Railsの承認処理        | 更新禁止                   |
-| 2     | `receipts`                         | 検品担当スタッフ       | 検品担当者・確定処理       |
-| 2     | `receipt_lines`                    | 検品担当スタッフ       | 検品確定前の担当者         |
-| 3     | `supplier_closures`                | 店舗管理者             | 店舗管理者                 |
-| 3     | `supplier_delivery_rules`          | 店舗管理者             | 店舗管理者                 |
-| 3     | `busy_periods`                     | 店舗管理者             | 店舗管理者                 |
-| 3     | `auth_sessions`                    | Rails認証処理          | Rails認証・失効処理        |
+| Phase | テーブル                           | 作成主体                                 | 更新主体                            |
+| ----- | ---------------------------------- | ---------------------------------------- | ----------------------------------- |
+| 1     | `stores`                           | システム管理者                           | システム管理者                      |
+| 1     | `staffs`                           | 本人の自己登録処理・初期設定・店舗管理者 | 本人（許可項目）・店舗管理者・Rails |
+| 1     | `oauth_identities`                 | 認証・紐付け処理                         | 認証・紐付け管理処理                |
+| 1     | `positions`                        | 店舗管理者                               | 店舗管理者                          |
+| 1     | `position_assignments`             | 店舗管理者                               | 店舗管理者                          |
+| 1     | `items`                            | 店舗管理者                               | 店舗管理者                          |
+| 1     | `position_items`                   | 店舗管理者                               | 店舗管理者                          |
+| 1     | `stock_locations`                  | 店舗管理者                               | 店舗管理者                          |
+| 1     | `stock_location_items`             | 店舗管理者                               | 店舗管理者                          |
+| 1     | `inventory_counts`                 | 権限を持つスタッフ                       | 権限を持つスタッフ・確定者          |
+| 1     | `inventory_count_lines`            | 棚卸実施・入力スタッフ                   | 棚卸実施・入力スタッフ              |
+| 1     | `loss_records`                     | 権限を持つスタッフ                       | 権限を持つスタッフ                  |
+| 1     | `audit_events`                     | Railsの監査記録処理                      | 原則更新禁止                        |
+| 2     | `position_approval_authorizations` | 店舗管理者                               | 店舗管理者                          |
+| 2     | `stock_transfers`                  | 権限を持つスタッフ                       | 原則訂正履歴で対応                  |
+| 2     | `suppliers`                        | 店舗管理者                               | 店舗管理者                          |
+| 2     | `supplier_items`                   | 店舗管理者                               | 店舗管理者                          |
+| 2     | `purchase_orders`                  | 発注担当スタッフ                         | 発注担当者・承認処理                |
+| 2     | `purchase_order_lines`             | 発注担当スタッフ                         | 発注確定前の担当者                  |
+| 2     | `order_approval_events`            | Railsの承認処理                          | 更新禁止                            |
+| 2     | `receipts`                         | 検品担当スタッフ                         | 検品担当者・確定処理                |
+| 2     | `receipt_lines`                    | 検品担当スタッフ                         | 検品確定前の担当者                  |
+| 3     | `supplier_closures`                | 店舗管理者                               | 店舗管理者                          |
+| 3     | `supplier_delivery_rules`          | 店舗管理者                               | 店舗管理者                          |
+| 3     | `busy_periods`                     | 店舗管理者                               | 店舗管理者                          |
+| 3     | `auth_sessions`                    | Rails認証処理                            | Rails認証・失効処理                 |
 
 ### 設計上の注意
 
@@ -687,3 +1122,166 @@
 - 監査・承認イベントは追記型とし、通常の編集・削除を禁止する。
 - 他店舗のデータは、作成・更新・参照のいずれも許可しない。
 - 各カラムの具体的な設定元（画面入力・Rails自動設定など）はIssue #4〜#7で確定する。
+
+## 31. 既存店舗へのスタッフサインアップ
+
+Phase 1では、システムに登録済みの1店舗に対して、
+スタッフ本人がアプリから自己登録する方式を採用する。
+
+### サインアップ
+
+1. スタッフがアプリで新規登録を選択する。
+2. Google OpenID Connectで本人認証する。
+3. Railsが認証結果を検証する。
+4. 検証済みissuer・subjectを照合する。
+5. 登録済みなら通常ログインへ誘導する。
+6. 未登録ならスタッフ名・店舗参加コードを入力する。
+7. Railsが唯一の運用店舗を特定する。
+8. 参加コード・有効期限・店舗状態を検証する。
+9. DBトランザクション内で以下を登録する。
+   - staffs（role_code=staff、status=active）
+   - oauth_identities
+   - audit_events
+10. RailsがZAIKO API用認証トークンを発行する。
+11. 一般スタッフとしてログインを完了する。
+
+### 登録ルール
+
+- 店舗作成機能はPhase 1の対象外とする。
+- 店舗選択画面を設けない。
+- 所属店舗はRailsが決定する。
+- クライアント指定のstore_idは信用しない。
+- 管理者権限を自己登録で取得できない。
+- Googleのメールアドレスだけで既存スタッフに紐付けない。
+- 同一Googleアカウントの重複登録を禁止する。
+- 停止中の店舗には登録できない。
+- 登録完了後は再度サインインを求めず利用開始できる。
+- 登録処理失敗時は全体をロールバックする。
+
+### 初期管理者
+
+- 初期管理者はシステム導入時に作成する。
+- 初期管理者のGoogleアカウント紐付けも安全な初期設定で実施する。
+- 一般向けのサインアップ処理からadminを作成しない。
+
+### 将来の拡張
+
+- storesテーブルとstore_idは維持する。
+- Phase 1では1スタッフは1店舗所属とする。
+- 複数店舗の登録・選択・兼務は将来の別Issueで設計する。
+
+## 32. Phase 1 API認証・ログアウト設計
+
+**対応Issue：** #4
+
+**実装フェーズ：** Phase 1-A
+
+### 32.1 認証方式
+
+- Google OpenID Connectによって本人認証を行う。
+- RailsはGoogleの認証結果をサーバー側で検証する。
+- 検証済みのissuer・subjectでoauth_identitiesを照合する。
+- RailsはZAIKO API専用の署名付きトークンを発行する。
+- Google ID Tokenを業務APIの認証トークンとして使い回さない。
+- 署名にはRailsのActiveSupport::MessageVerifierを使用する。
+- トークンの有効期限は8時間とする。
+- Phase 1ではリフレッシュトークンを発行しない。
+
+### 32.2 APIトークンの内容
+
+署名対象のデータ：
+
+- staff_id
+- store_id
+- oauth_identity_id
+- auth_version
+
+用途は `api_access` とする。
+
+署名対象に氏名・メールアドレス・パスワード等は含めない。
+
+role_codeはトークンに固定せず、
+各APIでDBの最新値を取得する。
+
+### 32.3 APIアクセス時の認証
+
+保護対象APIでは、以下を検証する。
+
+1. AuthorizationヘッダーにBearer Tokenが存在する。
+2. トークンの署名が正しい。
+3. 用途がapi_accessである。
+4. 有効期限内である。
+5. staff_idに対応するスタッフが存在する。
+6. スタッフのstatusがactiveである。
+7. 所属店舗のactiveがtrueである。
+8. トークンのstore_idと所属店舗が一致する。
+9. auth_versionがDBの最新値と一致する。
+10. oauth_identity_idが同じスタッフに紐付いている。
+11. リクエスト対象の店舗が認可された店舗と一致する。
+12. 操作に必要な権限がある。
+
+スタッフID・店舗ID・権限を
+クライアントのリクエスト値から決定しない。
+
+### 32.4 ログアウト
+
+1. アプリからRailsのログアウトAPIを呼び出す。
+2. Railsが現在のトークンを検証する。
+3. staffs.auth_versionを原子的に加算する。
+4. 成功時、同じスタッフの発行済みトークンをすべて失効する。
+5. アプリ側のSecureStoreからトークンを削除する。
+6. ログイン画面へ遷移する。
+
+Phase 1はスタッフ単位の全端末失効とする。
+
+特定端末だけを失効する機能はPhase 3で実装する。
+
+サーバーとの通信に失敗し、失効処理が完了しなかった場合は、
+ローカルで削除してもサーバー側の失効は保証しない。
+
+### 32.5 スタッフの利用停止・退職
+
+- suspendedまたはretiredのスタッフはAPIを利用できない。
+- 各APIでDBの最新statusを検証する。
+- 管理者による強制ログアウトはauth_versionを更新する。
+- 店舗が無効化されている場合もAPIを拒否する。
+- 変更前から実行中のリクエストまで即時中断することは保証しない。
+
+### 32.6 再ログイン
+
+- トークンの期限切れ時は再認証を求める。
+- Google認証に成功した場合でもスタッフと店舗を再検証する。
+- 有効なスタッフにのみ新しいトークンを発行する。
+- 登録済みスタッフは店舗参加コードを再入力しない。
+- 既存のGoogleアカウント紐付けを再利用する。
+
+### 32.7 APIエラー
+
+| 条件                   | HTTPステータス |
+| ---------------------- | -------------- |
+| トークン未指定         | 401            |
+| 署名不正・期限切れ     | 401            |
+| スタッフ無効化         | 401            |
+| 権限不足               | 403            |
+| 他店舗の個別データ参照 | 原則404        |
+
+エラーレスポンスに不要なスタッフ情報・店舗情報を含めない。
+
+### 32.8 セキュリティ対策
+
+- API通信はHTTPSに限定する。
+- トークンはExpo SecureStoreに保存する。
+- トークン原文をDBやログに保存しない。
+- Googleのアクセストークン・リフレッシュトークンも原則保存しない。
+- 認証処理と参加コード検証にはレート制限を設ける。
+- トークンの署名鍵はサーバー側で安全に管理する。
+- 署名鍵の変更時の失効・移行方法を実装時に検証する。
+
+### 32.9 Phase 3との境界
+
+- auth_sessionsはPhase 3（Issue #9）で実装する。
+- Phase 1では端末別のセッション記録を保持しない。
+- 特定端末だけの強制ログアウトは実装しない。
+- 発行済みトークンが漏えいした場合、
+  失効処理または有効期限到来まで悪用される可能性がある。
+- この残存リスクを受入レビューで評価する。
