@@ -254,3 +254,145 @@ Phase 3のIssue #9で検証する。
 | APPROVAL-018 | Service | 発注の承認を実行                             | 監査履歴を登録   |
 | APPROVAL-019 | Service | 承認権限の付与・失効を実行                   | 監査履歴を登録   |
 | APPROVAL-020 | Service | 退職済みスタッフが発注を承認                 | 拒否             |
+
+## 16. 食材マスタ詳細テスト
+
+**対応Issue：** #5
+
+**実装フェーズ：** Phase 1
+
+| ID       | 分類    | テスト内容                         | 期待結果           |
+| -------- | ------- | ---------------------------------- | ------------------ |
+| ITEM-001 | Model   | 正常な食材情報を登録               | 成功               |
+| ITEM-002 | DB      | 同一店舗で食材コードが重複         | UNIQUE制約違反     |
+| ITEM-003 | Model   | 異なる店舗で同じ食材コードを使用   | 成功               |
+| ITEM-004 | DB      | 食材コードが空白のみ               | CHECK制約違反      |
+| ITEM-005 | DB      | 食材名が空白のみ                   | CHECK制約違反      |
+| ITEM-006 | DB      | 不正なbase_unitを指定              | CHECK制約違反      |
+| ITEM-007 | DB      | sort_orderに負数を指定             | CHECK制約違反      |
+| ITEM-008 | Model   | 食材名を変更                       | 成功               |
+| ITEM-009 | Service | 食材を無効化                       | active=falseへ変更 |
+| ITEM-010 | Service | 無効化した食材の過去履歴を参照     | 履歴を保持         |
+| ITEM-011 | Service | 数量履歴のある食材の基準単位を変更 | 拒否               |
+| ITEM-012 | Request | 他店舗の食材を更新                 | 拒否               |
+| ITEM-013 | Model   | 古いlock_versionで更新             | 更新競合を検出     |
+| ITEM-014 | Service | 複数ポジションで同じ食材を使用     | 食材マスタは1件    |
+| ITEM-015 | Service | 在庫数量をポジション別に集計       | 二重計上しない     |
+| ITEM-016 | Service | kgからgへ数量換算                  | 正確に換算         |
+| ITEM-017 | Service | Lからmlへ数量換算                  | 正確に換算         |
+| ITEM-018 | Service | 単位の異なる数量を不正に加算       | 拒否               |
+| ITEM-019 | Service | 個数単位で小数数量を登録           | 拒否               |
+| ITEM-020 | Service | 在庫数量のない食材を表示           | 未棚卸として扱う   |
+
+## 17. ポジション別使用食材テスト
+
+**対応Issue：** #5
+
+**実装フェーズ：** Phase 1
+
+| ID                | 分類    | テスト内容                           | 期待結果                 |
+| ----------------- | ------- | ------------------------------------ | ------------------------ |
+| POSITION-ITEM-001 | Model   | 有効なポジションと食材を紐付け       | 成功                     |
+| POSITION-ITEM-002 | DB      | 同一店舗・ポジション・食材を重複登録 | UNIQUE制約違反           |
+| POSITION-ITEM-003 | Model   | 同じ食材を別ポジションに紐付け       | 成功                     |
+| POSITION-ITEM-004 | Model   | 同じポジションに複数食材を紐付け     | 成功                     |
+| POSITION-ITEM-005 | DB      | 他店舗の食材を紐付け                 | 複合FK制約違反           |
+| POSITION-ITEM-006 | DB      | 他店舗のポジションを紐付け           | 複合FK制約違反           |
+| POSITION-ITEM-007 | Service | 無効な食材を新規紐付け               | 拒否                     |
+| POSITION-ITEM-008 | Service | 無効なポジションを新規紐付け         | 拒否                     |
+| POSITION-ITEM-009 | Service | 使用対象を無効化                     | active=false             |
+| POSITION-ITEM-010 | Service | 無効化済みの組み合わせを再有効化     | 既存レコードを更新       |
+| POSITION-ITEM-011 | Model   | 古いlock_versionで更新               | 更新競合を検出           |
+| POSITION-ITEM-012 | Service | 複数ポジションで同じ食材を使用       | 食材マスタは1件          |
+| POSITION-ITEM-013 | Service | 複数ポジションに紐付く食材を在庫集計 | 物理在庫を二重計上しない |
+| POSITION-ITEM-014 | Request | 他店舗の関連情報を参照・変更         | 拒否                     |
+| POSITION-ITEM-015 | Service | 使用食材の設定を変更                 | 監査履歴を登録           |
+
+## 18. 保管場所マスタ詳細テスト
+
+**対応Issue：** #5
+
+**実装フェーズ：** Phase 1
+
+| ID           | 分類    | テスト内容                             | 期待結果                 |
+| ------------ | ------- | -------------------------------------- | ------------------------ |
+| LOCATION-001 | Model   | 正常な保管場所を登録                   | 成功                     |
+| LOCATION-002 | DB      | 同一店舗で保管場所コードが重複         | UNIQUE制約違反           |
+| LOCATION-003 | DB      | 異なる店舗で同じ保管場所コードを登録   | 成功                     |
+| LOCATION-004 | DB      | 保管場所名が空白のみ                   | CHECK制約違反            |
+| LOCATION-005 | DB      | 不正なlocation_kindを指定              | CHECK制約違反            |
+| LOCATION-006 | DB      | 不正な保管場所コードを指定             | CHECK制約違反            |
+| LOCATION-007 | DB      | sort_orderに負数を指定                 | CHECK制約違反            |
+| LOCATION-008 | Model   | 保管場所名を変更                       | 成功                     |
+| LOCATION-009 | Service | 保管場所を無効化                       | active=false             |
+| LOCATION-010 | Service | 無効な保管場所で新規棚卸を開始         | 拒否                     |
+| LOCATION-011 | Service | 未確定棚卸がある保管場所を無効化       | 拒否                     |
+| LOCATION-012 | Service | 保管場所を再有効化                     | 関連設定を検証して成功   |
+| LOCATION-013 | Request | 他店舗の保管場所を参照                 | 拒否                     |
+| LOCATION-014 | Request | 他店舗の保管場所を更新                 | 拒否                     |
+| LOCATION-015 | Model   | 古いlock_versionで更新                 | 更新競合を検出           |
+| LOCATION-016 | Service | 保管場所情報を変更                     | 監査履歴を登録           |
+| LOCATION-017 | Service | 同じ食材を複数保管場所に配置           | 成功                     |
+| LOCATION-018 | Service | 複数ポジションが使用する同一食材を集計 | 物理在庫を二重計上しない |
+| LOCATION-019 | Service | 無効化した保管場所の過去棚卸を参照     | 履歴を保持               |
+| LOCATION-020 | Request | 保管場所コード・名称・区分で検索       | 条件に一致する結果を返す |
+
+## 19. 保管場所別管理食材テスト
+
+**対応Issue：** #5
+
+**実装フェーズ：** Phase 1
+
+| ID                      | 分類    | テスト内容                           | 期待結果                     |
+| ----------------------- | ------- | ------------------------------------ | ---------------------------- |
+| STOCK-LOCATION-ITEM-001 | Model   | 正常な保管場所別食材を登録           | 成功                         |
+| STOCK-LOCATION-ITEM-002 | DB      | 同一店舗・保管場所・食材を重複登録   | UNIQUE制約違反               |
+| STOCK-LOCATION-ITEM-003 | Model   | 同じ食材を別の保管場所に登録         | 成功                         |
+| STOCK-LOCATION-ITEM-004 | Model   | 同じ保管場所に複数食材を登録         | 成功                         |
+| STOCK-LOCATION-ITEM-005 | DB      | 他店舗の食材を登録                   | 複合FK制約違反               |
+| STOCK-LOCATION-ITEM-006 | DB      | 他店舗の保管場所を登録               | 複合FK制約違反               |
+| STOCK-LOCATION-ITEM-007 | DB      | 他店舗の責任ポジションを登録         | 複合FK制約違反               |
+| STOCK-LOCATION-ITEM-008 | DB      | 責任ポジションがNULL                 | NOT NULL制約違反             |
+| STOCK-LOCATION-ITEM-009 | Service | 無効な食材を登録                     | 拒否                         |
+| STOCK-LOCATION-ITEM-010 | Service | 無効な保管場所を登録                 | 拒否                         |
+| STOCK-LOCATION-ITEM-011 | Service | 無効な責任ポジションを登録           | 拒否                         |
+| STOCK-LOCATION-ITEM-012 | Service | 棚卸責任ポジションを変更             | 成功・監査履歴作成           |
+| STOCK-LOCATION-ITEM-013 | Service | 棚卸対象を無効化                     | 条件を満たす場合active=false |
+| STOCK-LOCATION-ITEM-014 | Service | 無効化済みの組み合わせを再有効化     | 既存レコードを更新           |
+| STOCK-LOCATION-ITEM-015 | Model   | 古いlock_versionで更新               | 更新競合を検出               |
+| STOCK-LOCATION-ITEM-016 | Service | 同じ食材を複数ポジションが使用       | 物理在庫は重複しない         |
+| STOCK-LOCATION-ITEM-017 | Service | 同じ食材を複数保管場所で棚卸         | 保管場所別に数量を管理       |
+| STOCK-LOCATION-ITEM-018 | Service | 複数保管場所の最新確定数量を集計     | 同じ実在庫を二重計上しない   |
+| STOCK-LOCATION-ITEM-019 | Service | 責任ポジション変更後に過去棚卸を参照 | 当時の責任ポジションを保持   |
+| STOCK-LOCATION-ITEM-020 | Request | 他店舗の保管場所別食材を参照・更新   | 拒否                         |
+| STOCK-LOCATION-ITEM-021 | Service | 未確定棚卸がある対象を無効化         | 拒否                         |
+| STOCK-LOCATION-ITEM-022 | Service | 在庫が残る対象を無効化               | 在庫整理なしでは拒否         |
+| STOCK-LOCATION-ITEM-023 | Service | 責任ポジション変更と棚卸実施者の記録 | 両方を区別して保持           |
+| STOCK-LOCATION-ITEM-024 | DB      | sort_orderに負数を指定               | CHECK制約違反                |
+
+## 20. 在庫照会・帳票出力のデータ対応テスト
+
+**対応Issue：** #5
+
+**対応要件：** FR-01、FR-02
+
+**実装フェーズ：** Phase 1
+
+| ID         | 分類    | テスト内容                         | 期待結果                     |
+| ---------- | ------- | ---------------------------------- | ---------------------------- |
+| OUTPUT-001 | Service | 同一食材を複数ポジションが使用     | 数量を重複加算しない         |
+| OUTPUT-002 | Service | 保管場所ごとの最新確定数量を取得   | 各場所で最新1件のみ採用      |
+| OUTPUT-003 | Service | 下書きの数量が存在する             | 集計から除外                 |
+| OUTPUT-004 | Service | 確定履歴が存在しない               | 未確認として表示             |
+| OUTPUT-005 | Service | 確定済み数量が0                    | 実測0として表示              |
+| OUTPUT-006 | Service | 過去の対象営業日を指定             | 対象日以前の情報を取得       |
+| OUTPUT-007 | PDF     | 棚卸記入用を出力                   | 前回数量を初期状態で非表示   |
+| OUTPUT-008 | PDF     | 前回数量の表示を指定               | 前回数量を表示               |
+| OUTPUT-009 | CSV     | 食材名・数量・単位等を出力         | 定義した列を出力             |
+| OUTPUT-010 | CSV     | 数式として解釈され得る文字列を出力 | CSV Injectionを防止          |
+| OUTPUT-011 | Request | 他店舗の帳票を出力                 | 拒否                         |
+| OUTPUT-012 | Service | 名称・コード・場所で検索           | 指定条件で抽出               |
+| OUTPUT-013 | Service | 保管場所ごとの確認日が異なる       | 各場所の最新確認値として集計 |
+| OUTPUT-014 | Service | 最新数量が未確認の保管場所を含む   | 未確認対象を区別して表示     |
+| OUTPUT-015 | PDF     | 責任ポジション別に棚卸表を出力     | 対象の食材・場所のみ出力     |
+| OUTPUT-016 | CSV     | 日本語の食材名を出力               | 文字化けせず出力             |

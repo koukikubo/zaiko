@@ -466,89 +466,629 @@ Migrationの具体的な記述は実装Issueで確定する。
 
 ## 7. `items`（食材・商品マスタ）
 
-**責務：** 店舗が扱う食材・商品を一元管理する。
+**責務：** 店舗で使用する食材・商品の基本情報と在庫基準単位を管理する。
 
-| カラム名     | 日本語名     | 型          | NULL | DEFAULT | Option      |
-| ------------ | ------------ | ----------- | ---- | ------- | ----------- |
-| `store_id`   | 店舗ID       | bigint      | 不可 | —       | FK → stores |
-| `code`       | 食材コード   | string(50)  | 不可 | —       |             |
-| `name`       | 食材名       | string(150) | 不可 | —       | INDEX候補   |
-| `base_unit`  | 在庫基準単位 | string(20)  | 不可 | —       |             |
-| `sort_order` | 表示順       | integer     | 不可 | 0       |             |
-| `active`     | 有効状態     | boolean     | 不可 | true    |             |
-| `memo`       | 備考         | text        | 可   | —       |             |
+**作成・更新主体：** 店舗管理者
 
-**制約・備考**
+**実装フェーズ：** Phase 1
 
+| カラム名       | 日本語名       | 型          | NULL | DEFAULT | Option      | 設定元 |
+| -------------- | -------------- | ----------- | ---- | ------- | ----------- | ------ |
+| `id`           | 食材ID         | bigint      | 不可 | DB採番  | PK          | DB     |
+| `store_id`     | 店舗ID         | bigint      | 不可 | —       | FK → stores | Rails  |
+| `code`         | 食材コード     | string(50)  | 不可 | —       | 複合UNIQUE  | 管理者 |
+| `name`         | 食材名         | string(150) | 不可 | —       | INDEX       | 管理者 |
+| `base_unit`    | 在庫基準単位   | string(20)  | 不可 | —       | CHECK       | 管理者 |
+| `sort_order`   | 表示順         | integer     | 不可 | 0       | CHECK       | 管理者 |
+| `active`       | 有効状態       | boolean     | 不可 | true    | —           | 管理者 |
+| `memo`         | 備考           | text        | 可   | NULL    | —           | 管理者 |
+| `lock_version` | 更新バージョン | integer     | 不可 | 0       | 楽観ロック  | Rails  |
+| `created_at`   | 作成日時       | datetime(6) | 不可 | —       | —           | Rails  |
+| `updated_at`   | 更新日時       | datetime(6) | 不可 | —       | —           | Rails  |
+
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(store_id) REFERENCES stores(id)`
 - `UNIQUE(store_id, code)`
-- 共通倉庫と各ポジションの棚に同じ料理酒が存在しても、食材マスタは1件にする。
-- 在庫数量はこのテーブルへ直接保持しない。
-- 発注単位と在庫基準単位が異なる場合の換算は、後続の仕入先別商品で扱う。
+- `UNIQUE(store_id, id)`：複合FKの参照先
+- `INDEX(store_id, active, sort_order)`
+- `INDEX(store_id, name)`
+- `CHECK(btrim(code) <> '')`
+- `CHECK(btrim(name) <> '')`
+- `CHECK(sort_order >= 0)`
+- `CHECK(base_unit IN ('g', 'kg', 'ml', 'L', '個', '本', '袋', '缶', '箱'))`
+
+名前の部分一致検索が必要な場合は、
+通常のB-treeインデックスとは別に、
+pg_trgm等の導入を実装時に検討する。
+
+### 在庫基準単位
+
+各食材に対して、在庫数量を記録する際の基準単位を
+1つ設定する。
+
+初期対応単位：
+
+| 区分 | 単位               |
+| ---- | ------------------ |
+| 重量 | g、kg              |
+| 容量 | ml、L              |
+| 個数 | 個、本、袋、缶、箱 |
+
+- 同一食材の在庫数量は、登録されたbase_unitで管理する。
+- 数量カラムは原則decimal(12,3)を使用する。
+- 重量・容量では小数第3位まで扱える。
+- 個、本、袋、缶、箱などの個数単位は、
+  Phase 1では整数数量のみ許可する。
+- 単位に応じた数量入力の検証は棚卸のServiceで行う。
+- 単位換算には浮動小数点演算を使用しない。
+
+換算例：
+
+- 1kg = 1000g
+- 1L = 1000ml
+- 1ケース12本の場合は12本に換算する。
+
+重量と容量の相互換算は、密度などの情報がない限り
+自動的には行わない。
+
+発注単位と在庫基準単位の換算係数は、
+Phase 2のsupplier_itemsで扱う。
+
+### 在庫管理対象の考え方
+
+- itemsは食材そのものを管理する。
+- position_itemsは食材を使用するポジションを管理する。
+- stock_location_itemsは保管場所ごとの棚卸対象を管理する。
+- items自体には在庫数量を保存しない。
+- items自体に棚卸責任ポジションを持たせない。
+- 棚卸対象の有効・無効はstock_location_itemsで管理する。
+
+### 食材の名称変更・無効化
+
+- 名称の変更は許可する。
+- 食材コードは原則変更しない。
+- 棚卸履歴・発注履歴が存在する食材は物理削除しない。
+- active=falseとして新規業務の選択対象から除外する。
+- 無効化後も過去の棚卸・発注履歴は保持する。
+- 基準単位は、数量履歴が存在する場合は原則変更禁止とする。
+- 基準単位を変更する必要がある場合は、
+  既存数量の換算・監査・履歴整合性を別途検討する。
+- 過去の名称や単位を当時の内容で表示する必要がある場合は、
+  棚卸・発注の履歴側にスナップショットを保存する。
+- 名称変更・単位変更・無効化は監査対象とする。
+
+### 店舗境界
+
+- 食材は必ず1店舗に所属する。
+- Phase 1では既存の1店舗をRails側で設定する。
+- クライアントが任意のstore_idを指定できない。
+- 将来の複数店舗運用では店舗ごとに同じ食材コードを使用可能。
+- 食材と保管場所・ポジションの関連は同一店舗に限定する。
+
+### アソシエーション
+
+- `belongs_to :store`
+- `has_many :position_items`
+- `has_many :positions, through: :position_items`
+- `has_many :stock_location_items`
+- `has_many :stock_locations, through: :stock_location_items`
+- `has_many :inventory_count_lines, through: :stock_location_items`
+
+※履歴を参照する関連では、active=falseの食材も取得できる必要がある。
+
+### 削除方針
+
+- 履歴や関連データが存在する食材の物理削除は禁止する。
+- 関連先のFKは原則RESTRICTとする。
+- 通常の削除操作はactive=falseへの変更として扱う。
 
 ## 8. `position_items`（ポジション別使用食材）
 
-**責務：** どのポジションが、どの食材を使用するか管理する。
+**責務：** 各ポジションが使用する食材を管理する。
 
-| カラム名      | 日本語名     | 型      | NULL | DEFAULT | Option         |
-| ------------- | ------------ | ------- | ---- | ------- | -------------- |
-| `position_id` | ポジションID | bigint  | 不可 | —       | FK → positions |
-| `item_id`     | 食材ID       | bigint  | 不可 | —       | FK → items     |
-| `active`      | 有効状態     | boolean | 不可 | true    |                |
+**作成・更新主体：** 店舗管理者
 
-**制約・備考**
+**実装フェーズ：** Phase 1
 
-- `UNIQUE(position_id, item_id)`
-- 1つの食材は複数ポジションから使用可能。
-- 発注担当・棚卸責任は管理しない。
-- Phase 1で採用する。詳細なカラム・制約はIssue #5で確定する。
+| カラム名       | 日本語名               | 型          | NULL | DEFAULT | Option             | 設定元 |
+| -------------- | ---------------------- | ----------- | ---- | ------- | ------------------ | ------ |
+| `id`           | ポジション別使用食材ID | bigint      | 不可 | DB採番  | PK                 | DB     |
+| `store_id`     | 店舗ID                 | bigint      | 不可 | —       | FK → stores        | Rails  |
+| `position_id`  | ポジションID           | bigint      | 不可 | —       | 複合FK → positions | 管理者 |
+| `item_id`      | 食材ID                 | bigint      | 不可 | —       | 複合FK → items     | 管理者 |
+| `active`       | 使用状態               | boolean     | 不可 | true    | —                  | 管理者 |
+| `lock_version` | 更新バージョン         | integer     | 不可 | 0       | 楽観ロック         | Rails  |
+| `created_at`   | 作成日時               | datetime(6) | 不可 | —       | —                  | Rails  |
+| `updated_at`   | 更新日時               | datetime(6) | 不可 | —       | —                  | Rails  |
 
-**採用判断：Phase 1で採用する。**
+### DB制約・INDEX
 
-- 複数ポジションで同じ食材を使用するため、食材と使用ポジションを多対多で管理する。
-- ポジションごとの食材一覧・検索・棚卸画面の表示対象を整理する目的で使用する。
-- 発注担当や棚卸責任ポジションは管理しない。
-- 在庫数量を保持せず、使用ポジション数による二重計上を防止する。
-- 作成・更新は店舗管理者が行う。
-- 詳細なカラム・制約はIssue #5で確定する。
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(store_id) REFERENCES stores(id)`
+- `FOREIGN KEY(store_id, position_id) REFERENCES positions(store_id, id)`
+- `FOREIGN KEY(store_id, item_id) REFERENCES items(store_id, id)`
+- `UNIQUE(store_id, position_id, item_id)`
+- `INDEX(store_id, item_id, active)`
+- `CHECK(lock_version >= 0)`
+
+複合FKの参照先：
+
+- `positions(store_id, id)`
+- `items(store_id, id)`
+
+参照先には対応するUNIQUE制約を定義する。
+
+### 業務ルール
+
+- 1ポジションは複数の食材を使用できる。
+- 1食材は複数のポジションから使用できる。
+- 同一店舗・同一ポジション・同一食材の組み合わせは1件とする。
+- 食材を複数ポジションに紐付けてもitemsは重複作成しない。
+- position_itemsには在庫数量を保存しない。
+- 発注責任ポジションを管理しない。
+- 棚卸責任ポジションを管理しない。
+- ポジションへのスタッフ割当はposition_assignmentsで管理する。
+- 使用対象の変更は監査対象とする。
+
+### 有効・無効の扱い
+
+- `active=true` は使用中を表す。
+- `active=false` は現在の使用対象から除外された状態を表す。
+- 無効化しても関連レコードは原則削除しない。
+- 同じ組み合わせの再登録では新規レコードを作らず、既存レコードを再有効化する。
+- 新規登録・再有効化時はitemsとpositionsの両方がactiveであることを確認する。
+- itemsまたはpositionsが無効化された場合、通常の新規選択候補から除外する。
+- 過去の棚卸・発注記録の参照は維持する。
+
+### 店舗境界
+
+- position_itemsは必ず1店舗に所属する。
+- position_idとitem_idは同じstore_idに所属しなければならない。
+- Railsは認証済みスタッフの所属店舗からstore_idを決定する。
+- クライアント指定のstore_idは信用しない。
+- 他店舗の食材とポジションを組み合わせた登録を禁止する。
+- Railsの認可とPostgreSQLの複合FKで店舗境界を保護する。
+
+### 在庫照会との関係
+
+- position_itemsはポジションごとの使用食材の抽出に利用する。
+- 物理在庫はstock_location_itemsで特定した保管場所×食材単位で管理する。
+- 1食材を複数ポジションが使用しても物理在庫を重複集計しない。
+- ポジション別在庫照会では、使用食材の抽出と物理在庫数量の集計を区別する。
+- 在庫の最新数量は後続の棚卸記録から取得する。
+- 未棚卸と数量0は区別する。
+
+### アソシエーション
+
+- `belongs_to :store`
+- `belongs_to :position`
+- `belongs_to :item`
+
+positions側：
+
+- `has_many :position_items`
+- `has_many :items, through: :position_items`
+
+items側：
+
+- `has_many :position_items`
+- `has_many :positions, through: :position_items`
+
+Railsの関連定義とDBの複合FK制約は別途設定する。
+
+### 削除方針
+
+- 通常の削除はactive=falseへの変更とする。
+- 関連先の物理削除は原則RESTRICTとする。
+- 既存の関連・履歴を維持する。
 
 ## 9. `stock_locations`（在庫保管場所）
 
-**責務：** 倉庫・冷蔵庫・各ポジションの棚など物理的な保管場所を管理する。
+**責務：** 共通倉庫・冷蔵庫・冷凍庫・各ポジションの棚など、食材の物理的な保管場所を管理する。
 
-| カラム名        | 日本語名       | 型          | NULL | DEFAULT | Option      |
-| --------------- | -------------- | ----------- | ---- | ------- | ----------- |
-| `store_id`      | 店舗ID         | bigint      | 不可 | —       | FK → stores |
-| `code`          | 保管場所コード | string(50)  | 不可 | —       |             |
-| `name`          | 保管場所名     | string(100) | 不可 | —       |             |
-| `location_kind` | 保管場所区分   | string(30)  | 可   | —       |             |
-| `sort_order`    | 表示順         | integer     | 不可 | 0       |             |
-| `active`        | 有効状態       | boolean     | 不可 | true    |             |
+**作成・更新主体：** 店舗管理者
 
-**制約・備考**
+**実装フェーズ：** Phase 1
 
+| カラム名        | 日本語名       | 型          | NULL | DEFAULT | Option            | 設定元 |
+| --------------- | -------------- | ----------- | ---- | ------- | ----------------- | ------ |
+| `id`            | 保管場所ID     | bigint      | 不可 | DB採番  | PK                | DB     |
+| `store_id`      | 店舗ID         | bigint      | 不可 | —       | FK → stores       | Rails  |
+| `code`          | 保管場所コード | string(50)  | 不可 | —       | 複合UNIQUE・CHECK | 管理者 |
+| `name`          | 保管場所名     | string(100) | 不可 | —       | CHECK             | 管理者 |
+| `location_kind` | 保管場所区分   | string(30)  | 不可 | —       | CHECK             | 管理者 |
+| `sort_order`    | 表示順         | integer     | 不可 | 0       | CHECK             | 管理者 |
+| `active`        | 有効状態       | boolean     | 不可 | true    | —                 | 管理者 |
+| `memo`          | 備考           | text        | 可   | NULL    | —                 | 管理者 |
+| `lock_version`  | 更新バージョン | integer     | 不可 | 0       | 楽観ロック        | Rails  |
+| `created_at`    | 作成日時       | datetime(6) | 不可 | —       | —                 | Rails  |
+| `updated_at`    | 更新日時       | datetime(6) | 不可 | —       | —                 | Rails  |
+
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(store_id) REFERENCES stores(id)`
 - `UNIQUE(store_id, code)`
-- 保管場所そのものに棚卸責任ポジションを固定しない。
-- 同じ保管場所でも食材ごとに責任ポジションが異なるため。
+- `UNIQUE(store_id, id)`：複合FKの参照先
+- `CHECK(code ~ '^[A-Z0-9][A-Z0-9_-]*$')`
+- `CHECK(btrim(name) <> '')`
+- `CHECK(location_kind IN ('warehouse', 'refrigerator', 'freezer', 'shelf', 'other'))`
+- `CHECK(sort_order >= 0)`
+- `CHECK(lock_version >= 0)`
+- `INDEX(store_id, active, sort_order)`
+- `INDEX(store_id, name)`
+
+保管場所コードは英大文字・数字・ハイフン・アンダースコアに限定する。
+小文字で入力された場合の大文字への正規化はRailsで行う。
+
+### 保管場所区分
+
+| コード         | 意味   |
+| -------------- | ------ |
+| `warehouse`    | 倉庫   |
+| `refrigerator` | 冷蔵庫 |
+| `freezer`      | 冷凍庫 |
+| `shelf`        | 棚     |
+| `other`        | その他 |
+
+保管場所区分は検索・表示のための分類とし、
+在庫数量や棚卸責任ポジションを決定する属性としては使用しない。
+
+### 保管場所コード
+
+- 店舗内で一意とする。
+- 異なる店舗間では同じコードを使用できる。
+- コードは管理者が設定する。
+- コード例：LOC001、LOC002、LOC003。
+- 名称は変更可能とする。
+- 過去の業務履歴で参照されるコードは原則変更しない。
+- コードの再利用は行わない。
+
+### 物理在庫の管理単位
+
+- 1つの保管場所は、在庫を独立して数える物理的な区画を表す。
+- 同じ食材は複数保管場所に存在してよい。
+- 保管場所自体には在庫数量を保存しない。
+- 食材との関係はstock_location_itemsで管理する。
+- 各保管場所の最新確定数量をもとに店舗全体の在庫を集計する。
+- 同じ物理在庫を別々の保管場所として二重登録しない。
+- Phase 1では親子階層を設けず、集計対象となる最小の管理区画を登録する。
+
+例：
+
+共通倉庫に料理酒5L、焼場冷蔵庫に料理酒1.5Lある場合は、
+それぞれ独立した保管場所で管理する。
+
+店舗全体の料理酒は6.5Lとする。
+
+### ポジションとの関係
+
+- stock_locationsにposition_idを持たせない。
+- 1つの保管場所に複数ポジションが使用する食材を登録できる。
+- 食材ごとの棚卸責任はstock_location_itemsで管理する。
+- 実際に棚卸を行ったスタッフは棚卸記録側で管理する。
+- 保管場所の区分とポジションの担当関係は独立する。
+
+### 有効・無効の扱い
+
+- active=trueは業務で使用可能な保管場所を表す。
+- active=falseは新規の棚卸対象として使用しない状態を表す。
+- 無効化しても過去の棚卸履歴は保持する。
+- active=falseの保管場所では新規棚卸を開始しない。
+- 既存の未確定棚卸がある場合は無効化を拒否する。
+- 有効なstock_location_itemsがある場合は、
+  関連設定を整理してから無効化する。
+- 無効化と関連設定の変更はServiceで管理する。
+- 無効化後の再有効化は許可するが、
+  関連する食材の有効状態を再検証する。
+
+未確定棚卸の詳細条件はIssue #6で確定する。
+
+### 店舗境界
+
+- 保管場所は必ず1店舗に所属する。
+- Phase 1ではRailsが運用店舗のstore_idを設定する。
+- クライアント指定のstore_idは信用しない。
+- 他店舗の食材を保管場所へ紐付けない。
+- stock_location_itemsで複合FKを使用して店舗一致を保証する。
+- 保管場所へのアクセスは認証済みスタッフの所属店舗で制限する。
+
+### 表示・検索
+
+- 保管場所名で検索できる。
+- 保管場所コードで検索できる。
+- 保管場所区分で絞り込める。
+- active状態で絞り込める。
+- sort_order、idの昇順で表示する。
+- 棚卸表の保管場所別出力に利用する。
+- 食材ごとの表示順はstock_location_itemsで管理する。
+
+### 履歴・監査
+
+- 保管場所名の変更は監査対象とする。
+- 保管場所区分の変更は監査対象とする。
+- 保管場所の無効化・再有効化は監査対象とする。
+- 過去の棚卸は保管場所IDを参照して保持する。
+- 過去の名称を当時の内容で表示する必要がある場合は、
+  Issue #6で棚卸記録側のスナップショットを設計する。
+
+### アソシエーション
+
+- `belongs_to :store`
+- `has_many :stock_location_items`
+- `has_many :items, through: :stock_location_items`
+- `has_many :inventory_counts`
+
+### 削除方針
+
+- 通常の削除はactive=falseへの変更とする。
+- 関連データ・履歴がある場合の物理削除は禁止する。
+- 関連先のFKは原則RESTRICTとする。
 
 ## 10. `stock_location_items`（保管場所別管理食材）
 
-**責務：** 食材の保管場所と、通常の棚卸責任ポジションを管理する。
+**責務：** 保管場所ごとの食材と、その棚卸責任ポジションを管理する。
 
-| カラム名                  | 日本語名             | 型      | NULL | DEFAULT | Option               |
-| ------------------------- | -------------------- | ------- | ---- | ------- | -------------------- |
-| `stock_location_id`       | 保管場所ID           | bigint  | 不可 | —       | FK → stock_locations |
-| `item_id`                 | 食材ID               | bigint  | 不可 | —       | FK → items           |
-| `responsible_position_id` | 棚卸責任ポジションID | bigint  | 不可 | —       | FK → positions       |
-| `active`                  | 棚卸対象状態         | boolean | 不可 | true    |                      |
-| `sort_order`              | 棚卸表示順           | integer | 不可 | 0       |                      |
+**作成・更新主体：** 店舗管理者
 
-**制約・備考**
+**実装フェーズ：** Phase 1
 
-- `UNIQUE(stock_location_id, item_id)`
-- 責任ポジションと実際の棚卸実施者を区別する。
-- 食材と保管場所の店舗が一致することを検証する。
-- 責任ポジションの変更後も過去の棚卸履歴が正しく読めるよう、記録時点の責任関係を残す方法を検討する。
-- このテーブルは在庫数量を保持しない。
+**対応Issue：** #5
+
+| カラム名                  | 日本語名             | 型          | NULL | DEFAULT | Option                   | 設定元 |
+| ------------------------- | -------------------- | ----------- | ---- | ------- | ------------------------ | ------ |
+| `id`                      | 保管場所別食材ID     | bigint      | 不可 | DB採番  | PK                       | DB     |
+| `store_id`                | 店舗ID               | bigint      | 不可 | —       | FK → stores              | Rails  |
+| `stock_location_id`       | 保管場所ID           | bigint      | 不可 | —       | 複合FK → stock_locations | 管理者 |
+| `item_id`                 | 食材ID               | bigint      | 不可 | —       | 複合FK → items           | 管理者 |
+| `responsible_position_id` | 棚卸責任ポジションID | bigint      | 不可 | —       | 複合FK → positions       | 管理者 |
+| `active`                  | 棚卸対象状態         | boolean     | 不可 | true    | —                        | 管理者 |
+| `sort_order`              | 棚卸表示順           | integer     | 不可 | 0       | CHECK                    | 管理者 |
+| `lock_version`            | 更新バージョン       | integer     | 不可 | 0       | CHECK                    | Rails  |
+| `created_at`              | 作成日時             | datetime(6) | 不可 | —       | —                        | Rails  |
+| `updated_at`              | 更新日時             | datetime(6) | 不可 | —       | —                        | Rails  |
+
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(store_id) REFERENCES stores(id)`
+- `FOREIGN KEY(store_id, stock_location_id) REFERENCES stock_locations(store_id, id)`
+- `FOREIGN KEY(store_id, item_id) REFERENCES items(store_id, id)`
+- `FOREIGN KEY(store_id, responsible_position_id) REFERENCES positions(store_id, id)`
+- `UNIQUE(store_id, stock_location_id, item_id)`
+- `UNIQUE(store_id, id)`：後続テーブルの複合FK参照先
+- `CHECK(sort_order >= 0)`
+- `CHECK(lock_version >= 0)`
+- `INDEX(store_id, stock_location_id, active, sort_order)`
+- `INDEX(store_id, item_id, active)`
+- `INDEX(store_id, responsible_position_id, active)`
+
+複合FKの参照先には、以下のUNIQUE制約を定義する。
+
+- `stock_locations(store_id, id)`
+- `items(store_id, id)`
+- `positions(store_id, id)`
+
+### 採用理由
+
+本テーブルを採用する理由：
+
+1. 1食材が複数保管場所に存在できる。
+2. 1保管場所で複数食材を管理できる。
+3. 同じ保管場所でも食材ごとに棚卸責任を変更できる。
+4. 使用ポジションと棚卸責任を分離できる。
+5. 物理在庫の集計単位を明確にできる。
+
+代替案：
+
+- stock_locationsにresponsible_position_idを配置する案
+  - 同じ保管場所内で食材ごとに責任者を分けられないため不採用。
+- position_itemsにresponsible_position_idを配置する案
+  - 使用ポジションと棚卸責任が混在し、
+    保管場所ごとの責任を表現できないため不採用。
+
+### 業務ルール
+
+- 1つの保管場所に複数食材を登録できる。
+- 同じ食材を複数保管場所に登録できる。
+- 同一店舗・同一保管場所・同一食材の組み合わせは1件とする。
+- 同じ組み合わせに複数の棚卸責任ポジションを設定しない。
+- 棚卸責任ポジションは必ず設定する。
+- 1つのポジションが複数食材の棚卸責任を持てる。
+- 使用ポジションと棚卸責任ポジションは別の情報とする。
+- position_itemsに存在することを棚卸責任の必須条件とはしない。
+- 担当スタッフと実際の棚卸実施者は別々に管理する。
+- 本テーブルに在庫数量を保存しない。
+
+### 登録時の検証
+
+以下をすべて確認する。
+
+1. 操作スタッフが認証済みである。
+2. 操作スタッフが登録権限を持つ。
+3. 店舗が有効状態である。
+4. 保管場所が有効状態である。
+5. 食材が有効状態である。
+6. 棚卸責任ポジションが有効状態である。
+7. 保管場所・食材・ポジションの店舗が一致する。
+8. 同一保管場所・食材の登録が存在しない。
+
+登録時のstore_idはRailsが設定する。
+クライアントが指定したstore_idは信用しない。
+
+### 棚卸責任と実施者
+
+- responsible_position_idは通常の棚卸責任ポジションを示す。
+- 実際の棚卸実施者はinventory_count_linesで管理する。
+- 担当ポジションに所属するスタッフによる棚卸を基本とする。
+- 後輩や別スタッフによる代理棚卸を考慮する。
+- 代理棚卸の認可条件はIssue #6で確定する。
+- 棚卸を実施したスタッフIDと日時は履歴に保存する。
+- ポジションの担当履歴はposition_assignmentsで管理する。
+
+### 責任ポジションの変更
+
+棚卸責任ポジションの変更は許可する。
+
+例：
+
+共通倉庫の料理酒について、
+棚卸責任を焼場から揚場へ変更する。
+
+変更時のルール：
+
+- stock_location_itemsのresponsible_position_idを更新する。
+- 変更操作をaudit_eventsへ記録する。
+- 変更前後のポジションIDを監査履歴に残す。
+- 過去の確定棚卸の責任ポジションは変更しない。
+- 棚卸記録に当時の責任ポジションIDをスナップショット保存する。
+- 既存の未確定棚卸がある場合、責任変更と入力済み明細の整合性を検証する。
+
+スナップショットの記録タイミングと、
+棚卸途中の責任変更への対応はIssue #6で確定する。
+
+### 在庫集計と二重計上防止
+
+- 在庫管理の物理的な単位は保管場所×食材とする。
+- 同じ組み合わせはUNIQUE制約で重複登録を禁止する。
+- position_itemsの件数を在庫集計に使用しない。
+- 物理在庫は保管場所別に独立して数える。
+- 店舗全体の在庫は、対象食材の各保管場所における
+  最新確定数量を集計する。
+- 未確認数量と実測0を区別する。
+- 同じ物理区画を重複した保管場所として登録しない。
+- 集計対象となる保管場所は互いに重複しない管理区画とする。
+
+例：
+
+共通倉庫の料理酒：5L
+焼場冷蔵庫の料理酒：1.5L
+
+店舗全体の料理酒：6.5L
+
+料理酒の使用ポジションが2つ以上でも、
+その数によって在庫数量を増加させない。
+
+なお、本テーブルのUNIQUE制約だけでは、
+棚卸記録の重複や物理区画の重複まで保証できない。
+
+棚卸明細の一意性、確定処理、在庫算出方式は
+Issue #6で別途定義する。
+
+### 有効・無効の扱い
+
+- active=trueは棚卸対象として有効な状態を表す。
+- active=falseは新規棚卸対象から除外する状態を表す。
+- 無効化しても過去の棚卸記録は保持する。
+- 無効化済みの同一組み合わせを再登録する場合は、
+  新規作成せず既存レコードを再有効化する。
+- 再有効化時は保管場所・食材・ポジションの
+  有効状態を再検証する。
+- 未確定棚卸の対象になっている場合、
+  原則として無効化を拒否する。
+- 最新確定数量が残っている対象を無効化する場合は、
+  在庫移動・ロス・棚卸訂正等で数量の扱いを整理する。
+- active=falseを理由に過去の確定在庫履歴を削除しない。
+
+残存在庫の扱いと無効化条件の詳細は、
+Issue #6および後続の在庫移動設計で確定する。
+
+### 店舗境界
+
+- 保管場所・食材・責任ポジションは同じ店舗に所属する。
+- Railsの認可に加えて複合FKで店舗一致を保証する。
+- 他店舗の食材を保管場所へ登録することを禁止する。
+- 他店舗のポジションを棚卸責任として指定できない。
+- 他店舗の保管場所別食材情報を参照・変更できない。
+
+### 履歴・監査
+
+以下の操作を監査対象とする。
+
+- 保管場所別食材の登録
+- 棚卸責任ポジションの変更
+- 棚卸対象の無効化
+- 棚卸対象の再有効化
+
+過去の棚卸履歴では、
+記録当時の責任ポジション・実施者・数量を保持する。
+
+### アソシエーション
+
+- `belongs_to :store`
+- `belongs_to :stock_location`
+- `belongs_to :item`
+- `belongs_to :responsible_position, class_name: "Position"`
+- `has_many :inventory_count_lines`
+
+stock_locations側：
+
+- `has_many :stock_location_items`
+- `has_many :items, through: :stock_location_items`
+
+items側：
+
+- `has_many :stock_location_items`
+- `has_many :stock_locations, through: :stock_location_items`
+
+positions側：
+
+- `has_many :responsible_stock_location_items,
+class_name: "StockLocationItem",
+foreign_key: :responsible_position_id`
+
+※複合FKを含む具体的なRails関連設定は実装Issueで確認する。
+
+### 削除方針
+
+- 通常の削除はactive=falseへの変更とする。
+- 棚卸履歴を持つ関連レコードは物理削除しない。
+- 参照先の物理削除は原則RESTRICTとする。
+
+### Phase 2の発注責任との境界
+
+発注を集約する主担当ポジションは、
+棚卸責任ポジションと独立して管理する。
+
+候補の比較：
+
+- itemsに発注責任を持たせる案
+  - 食材ごとに一律の担当を設定する場合は単純。
+  - 仕入先・発注条件による違いを表現しづらい。
+- position_itemsに発注責任を持たせる案
+  - 食材を使用するポジションと発注担当が混在する。
+- Phase 2の発注関連テーブルで管理する案
+  - 仕入先や発注単位に応じた担当を表現しやすい。
+
+採用方針：
+
+Phase 1では発注責任を本テーブルへ追加しない。
+Phase 2ではsupplier_items等の発注設定と、
+purchase_orders.ordering_position_idの役割を整理し、
+主担当ポジションの保存先を確定する。
+
+### 最新確定在庫の取得ルール
+
+- 在庫照会は対象営業日（as_of）を指定できる。
+- 在庫の集計単位はstock_location_item_idとする。
+- 対象営業日以前の確定済み棚卸明細から、
+  保管場所×食材ごとに最新の1件を取得する。
+- 下書きの棚卸数量は在庫集計に含めない。
+- 同じ食材が複数ポジションで使用されていても、
+  position_itemsとのJOINによって数量を重複加算しない。
+- 最新確定数量が存在しない場合は未確認とし、
+  数量0として扱わない。
+- 実測数量0は確認済みの数量0として扱う。
+- 各保管場所の確認日が異なる場合、
+  店舗合計は「各場所の最新確認値の合計」と明示する。
+- この合計をリアルタイムの実在庫と同一視しない。
+- 最終確認日時と確認スタッフを表示できるようにする。
+- 使用する数量の基準単位はitems.base_unitとする。
+
+最新記録の抽出順序、訂正履歴の優先順位、
+同一営業日における再棚卸はIssue #6で確定する。
 
 ## 11. `inventory_counts`（日次在庫確認）
 
@@ -1285,3 +1825,59 @@ Phase 1はスタッフ単位の全端末失効とする。
 - 発行済みトークンが漏えいした場合、
   失効処理または有効期限到来まで悪用される可能性がある。
 - この残存リスクを受入レビューで評価する。
+
+## 33. Issue #5 在庫照会・帳票出力のデータ対応
+
+**対応要件：** FR-01、FR-02
+
+### 出力項目とデータ取得元
+
+| 出力項目           | データ取得元                                        | 種別   |
+| ------------------ | --------------------------------------------------- | ------ |
+| 食材コード         | items.code                                          | DB     |
+| 食材名             | items.name                                          | DB     |
+| 基準単位           | items.base_unit                                     | DB     |
+| 保管場所コード     | stock_locations.code                                | DB     |
+| 保管場所名         | stock_locations.name                                | DB     |
+| 棚卸責任ポジション | positions.name                                      | DB関連 |
+| 前回確認数量       | 最新確定済みinventory_count_lines.measured_quantity | 算出   |
+| 最終確認日時       | inventory_counts.confirmed_at                       | DB関連 |
+| 実施者             | inventory_count_lines.counted_by_id → staffs        | DB関連 |
+| 食材状態           | inventory_count_lines.quality_status                | DB関連 |
+| 状態メモ           | inventory_count_lines.quality_note                  | DB関連 |
+| 実数記入欄         | PDF出力時に空欄を生成                               | 表示用 |
+| 店舗合計数量       | 保管場所別の最新確定数量を集計                      | 算出   |
+
+### PDF出力
+
+- 棚卸記入用と実績確認用の帳票を区別する。
+- 棚卸記入用は前回数量を初期状態で非表示にする。
+- 前回数量の表示・非表示は切り替え可能とする。
+- 食材名、基準単位、実数記入欄、状態・メモ欄を設ける。
+- 保管場所別と責任ポジション別で出力できる。
+
+### CSV出力
+
+- DBに存在する項目と算出項目を区別する。
+- 対象営業日と最終確認日時を区別する。
+- 未確認数量は0へ変換せず、空欄等で表現する。
+- 日本語の文字化けを防ぐ文字コードを選定する。
+- CSV Injection対策を実施する。
+- 出力時に店舗・ポジションの認可を検証する。
+
+### 表示順
+
+1. stock_locations.sort_order
+2. stock_locations.id
+3. stock_location_items.sort_order
+4. stock_location_items.id
+
+ポジション別の出力では、
+responsible_position_idによる棚卸責任対象と、
+position_itemsによる使用食材の検索を区別する。
+
+### Phase 1と後続Issueの境界
+
+本Issueでは出力に必要なデータと取得元を定義する。
+実際のPDF・CSV生成処理と棚卸履歴の取得方法は、
+後続の実装Issueで具体化する。
