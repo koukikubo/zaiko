@@ -110,17 +110,20 @@
 
 ## 4. Phase 1：日次棚卸・在庫確認
 
-| 子テーブル（日本語名）              | 外部キー → 親テーブル                             | 関係・説明                                                         |
-| ----------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------ |
-| `inventory_counts`（日次在庫確認）  | `store_id` → `stores`                             | **1対多**。1店舗で複数回の棚卸を実施できる                         |
-| `inventory_counts`（日次在庫確認）  | `stock_location_id` → `stock_locations`           | **1対多**。1つの保管場所について複数日の棚卸を記録できる           |
-| `inventory_counts`（日次在庫確認）  | `opened_by_id` → `staffs`                         | **1対多**。1人のスタッフが複数の棚卸を作成できる                   |
-| `inventory_counts`（日次在庫確認）  | `confirmed_by_id` → `staffs`                      | **1対多・任意**。1人のスタッフが複数の棚卸を確定できる             |
-| `inventory_count_lines`（棚卸明細） | `inventory_count_id` → `inventory_counts`         | **1対多**。1回の棚卸に複数の食材明細が紐付く                       |
-| `inventory_count_lines`（棚卸明細） | `stock_location_item_id` → `stock_location_items` | **1対多**。1つの保管場所別食材について複数日の実測履歴を持てる     |
-| `inventory_count_lines`（棚卸明細） | `counted_by_id` → `staffs`                        | **1対多・任意**。1人のスタッフが複数の食材を実際に棚卸できる       |
-| `inventory_count_lines`（棚卸明細） | `entered_by_id` → `staffs`                        | **1対多・任意**。1人のスタッフが複数の棚卸明細をシステム入力できる |
-| `inventory_count_lines`（棚卸明細） | `responsible_position_id_snapshot` → `positions`  | **1対多・任意**。棚卸当時の責任ポジションを参照する                |
+| 子テーブル（日本語名）             | 外部キー → 親テーブル                   | 関係・説明                                               |
+| ---------------------------------- | --------------------------------------- | -------------------------------------------------------- |
+| `inventory_counts`（日次在庫確認） | `store_id` → `stores`                   | **1対多**。1店舗で複数回の棚卸を実施できる               |
+| `inventory_counts`（日次在庫確認） | `stock_location_id` → `stock_locations` | **1対多**。1つの保管場所について複数日の棚卸を記録できる |
+| `inventory_counts`（日次在庫確認） | `opened_by_id` → `staffs`               | **1対多**。1人のスタッフが複数の棚卸を作成できる         |
+| `inventory_counts`（日次在庫確認） | `confirmed_by_id` → `staffs`            | **1対多・任意**。1人のスタッフが複数の棚卸を確定できる   |
+
+| `inventory_count_lines`（棚卸明細） | `store_id` → `stores` | 1対多。同一店舗の棚卸明細を管理する |
+| `inventory_count_lines`（棚卸明細） | `(store_id, stock_location_id, inventory_count_id)` → `inventory_counts(store_id, stock_location_id, id)` | 1対多。棚卸ヘッダーと保管場所の一致を保証する |
+| `inventory_count_lines`（棚卸明細） | `(store_id, stock_location_id, stock_location_item_id)` → `stock_location_items(store_id, stock_location_id, id)` | 1対多。別の保管場所の食材混入を防ぐ |
+| `inventory_count_lines`（棚卸明細） | `(store_id, counted_by_id)` → `staffs(store_id, id)` | 1対多・任意。実際の棚卸実施者を記録する |
+| `inventory_count_lines`（棚卸明細） | `(store_id, entered_by_id)` → `staffs(store_id, id)` | 1対多・任意。システム入力者を記録する |
+| `inventory_count_lines`（棚卸明細） | `(store_id, responsible_position_id_snapshot)` → `positions(store_id, id)` | 1対多。棚卸当時の責任ポジションを保持する |
+| `inventory_count_lines`（棚卸明細） | `(store_id, source_line_id)` → `inventory_count_lines(store_id, id)` | 自己参照・任意。訂正・引き継ぎ元の明細を記録する |
 
 ### 設計上の注意
 
@@ -132,19 +135,25 @@
 
 棚卸明細の保管場所と、親となる棚卸の保管場所が一致することを保証する。
 
-同じ日に複数回棚卸する場合の重複防止・再棚卸ルールはIssue #6で確定する。
+同一営業日・同一保管場所の棚卸はrevision_noで版管理する。
+確定済みの過去版は保持し、最新確定版だけを在庫集計に使用する。
+詳細はinventory-rules.mdを参照する。
 
 ---
 
 ## 5. Phase 1：ロス・監査
 
-| 子テーブル（日本語名）     | 外部キー → 親テーブル                             | 関係・説明                                                 |
-| -------------------------- | ------------------------------------------------- | ---------------------------------------------------------- |
-| `loss_records`（ロス記録） | `store_id` → `stores`                             | **1対多**。1店舗に複数のロス記録が存在する                 |
-| `loss_records`（ロス記録） | `stock_location_item_id` → `stock_location_items` | **1対多**。1つの保管場所別食材に複数のロス記録が紐付く     |
-| `loss_records`（ロス記録） | `reported_by_id` → `staffs`                       | **1対多**。1人のスタッフが複数のロスを記録できる           |
-| `audit_events`（監査履歴） | `store_id` → `stores`                             | **1対多**。1店舗に複数の操作履歴がある                     |
-| `audit_events`（監査履歴） | `actor_id` → `staffs`                             | **1対多・任意**。1人のスタッフによる複数の操作を記録できる |
+| 子テーブル（日本語名） | 外部キー → 親テーブル | 関係・説明 |
+| ---------------------- | --------------------- | ---------- |
+
+| `loss_records`（ロス記録） | `store_id` → `stores` | 1対多。店舗に属するロス実績を管理する |
+| `loss_records`（ロス記録） | `(store_id, stock_location_item_id)` → `stock_location_items(store_id, id)` | 1対多。同一店舗の保管場所別食材を参照する |
+| `loss_records`（ロス記録） | `(store_id, reported_by_id)` → `staffs(store_id, id)` | 1対多。実際のロス報告者を記録する |
+| `loss_records`（ロス記録） | `(store_id, entered_by_id)` → `staffs(store_id, id)` | 1対多。システムへの登録者を記録する |
+| `loss_records`（ロス記録） | `(store_id, voided_by_id)` → `staffs(store_id, id)` | 1対多・任意。取消者を記録する |
+| `loss_records`（ロス記録） | `(store_id, replaces_loss_record_id)` → `loss_records(store_id, id)` | 自己参照・任意。訂正元記録を保持する |
+| `audit_events`（監査履歴） | `store_id` → `stores` | **1対多**。1店舗に複数の操作履歴がある |
+| `audit_events`（監査履歴） | `actor_id` → `staffs` | **1対多・任意**。1人のスタッフによる複数の操作を記録できる |
 
 ### 監査対象の扱い
 
