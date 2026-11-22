@@ -777,14 +777,24 @@ Railsの関連定義とDBの複合FK制約は別途設定する。
 - active=falseは新規の棚卸対象として使用しない状態を表す。
 - 無効化しても過去の棚卸履歴は保持する。
 - active=falseの保管場所では新規棚卸を開始しない。
-- 既存の未確定棚卸がある場合は無効化を拒否する。
-- 有効なstock_location_itemsがある場合は、
-  関連設定を整理してから無効化する。
+- 既存の未確定棚卸がある場合も保管場所の無効化を許可する。
+- 無効化時は未確定棚卸の存在を利用者に通知する。
+- 入力済みの棚卸明細は自動削除しない。
+- 無効化前に開始したdraftは、無効化後も編集・確定できる。
+- active=falseの保管場所では新しい棚卸を開始できない。
+- 過去の確定済み棚卸と訂正履歴は引き続き参照できる。
+- 保管場所の再有効化も許可する。
+- 有効なstock_location_itemsが残っていても保管場所の無効化を許可する。
+- 無効化によって関連食材や棚卸履歴を自動削除しない。
+- 無効化前に作成したdraftは編集・確定できる。
+- 無効化後は新規棚卸を開始できない。
+- 過去の確定済み棚卸の訂正は引き続き許可する。
+- 無効化された保管場所の残存在庫は履歴・在庫照会で確認できる。
 - 無効化と関連設定の変更はServiceで管理する。
-- 無効化後の再有効化は許可するが、
-  関連する食材の有効状態を再検証する。
+- 無効化後の再有効化は許可するが、関連する食材の有効状態を再検証する。
 
-未確定棚卸の詳細条件はIssue #6で確定する。
+未確定棚卸の継続・確定・変更履歴のルールは
+inventory-rules.mdに従う。
 
 ### 店舗境界
 
@@ -859,6 +869,7 @@ Railsの関連定義とDBの複合FK制約は別途設定する。
 - `FOREIGN KEY(store_id, responsible_position_id) REFERENCES positions(store_id, id)`
 - `UNIQUE(store_id, stock_location_id, item_id)`
 - `UNIQUE(store_id, id)`：後続テーブルの複合FK参照先
+- `UNIQUE(store_id, stock_location_id, id)`：棚卸明細の複合FK参照先
 - `CHECK(sort_order >= 0)`
 - `CHECK(lock_version >= 0)`
 - `INDEX(store_id, stock_location_id, active, sort_order)`
@@ -986,8 +997,13 @@ Issue #6で別途定義する。
   新規作成せず既存レコードを再有効化する。
 - 再有効化時は保管場所・食材・ポジションの
   有効状態を再検証する。
-- 未確定棚卸の対象になっている場合、
-  原則として無効化を拒否する。
+- 棚卸がdraft中でも管理対象の変更を許可する。
+- 食材を追加した場合、対象draftに未確認明細を追加する。
+- 対象外にする場合は、入力済み数量を利用者へ確認する。
+- 対象外となるdraft明細は変更前情報を監査記録に保存してから除外する。
+- 過去のconfirmed明細は変更・削除しない。
+- 在庫が残る食材を無効化した場合、残数量を履歴・在庫照会で追跡可能にする。
+- 責任ポジションの変更では、記録済みの実施者と実施日時を変更しない。
 - 最新確定数量が残っている対象を無効化する場合は、
   在庫移動・ロス・棚卸訂正等で数量の扱いを整理する。
 - active=falseを理由に過去の確定在庫履歴を削除しない。
@@ -1092,75 +1108,656 @@ purchase_orders.ordering_position_idの役割を整理し、
 
 ## 11. `inventory_counts`（日次在庫確認）
 
-**責務：** 棚卸作業の実施日・進捗・確定情報を管理する。
+**責務：** 店舗・営業日・保管場所ごとの棚卸作業、確定状態、再棚卸履歴を管理する。
 
-以下は「1営業日・1保管場所に1つの棚卸ヘッダー」を作る案。
+**対応Issue：** #6
 
-| カラム名            | 日本語名       | 型         | NULL | DEFAULT | Option               |
-| ------------------- | -------------- | ---------- | ---- | ------- | -------------------- |
-| `store_id`          | 店舗ID         | bigint     | 不可 | —       | FK → stores          |
-| `stock_location_id` | 保管場所ID     | bigint     | 不可 | —       | FK → stock_locations |
-| `business_date`     | 営業日         | date       | 不可 | —       | INDEX                |
-| `status`            | 棚卸状態       | string(30) | 不可 | draft   | CHECK候補            |
-| `opened_by_id`      | 作成スタッフID | bigint     | 不可 | —       | FK → staffs          |
-| `confirmed_by_id`   | 確定スタッフID | bigint     | 可   | —       | FK → staffs          |
-| `confirmed_at`      | 確定日時       | datetime   | 可   | —       |                      |
-| `lock_version`      | 更新バージョン | integer    | 不可 | 0       | 楽観ロック           |
+**実装フェーズ：** Phase 1
 
-**制約・備考**
+| カラム名            | 日本語名         | 型          | NULL | DEFAULT | Option                   | 設定元           |
+| ------------------- | ---------------- | ----------- | ---- | ------- | ------------------------ | ---------------- |
+| `id`                | 棚卸ID           | bigint      | 不可 | DB採番  | PK                       | DB               |
+| `store_id`          | 店舗ID           | bigint      | 不可 | —       | FK → stores              | Rails            |
+| `stock_location_id` | 保管場所ID       | bigint      | 不可 | —       | 複合FK → stock_locations | Rails            |
+| `business_date`     | 営業日           | date        | 不可 | —       | 複合UNIQUE               | スタッフ・Rails  |
+| `revision_no`       | 棚卸版番号       | integer     | 不可 | 1       | 複合UNIQUE・CHECK        | Rails            |
+| `revision_reason`   | 再棚卸・訂正理由 | text        | 可   | NULL    | CHECK                    | スタッフ（任意） |
+| `status`            | 棚卸状態         | string(30)  | 不可 | draft   | CHECK                    | Rails            |
+| `opened_by_id`      | 作成スタッフID   | bigint      | 不可 | —       | 複合FK → staffs          | Rails            |
+| `confirmed_by_id`   | 確定スタッフID   | bigint      | 可   | NULL    | 複合FK → staffs          | Rails            |
+| `confirmed_at`      | 確定日時         | datetime(6) | 可   | NULL    | CHECK                    | Rails            |
+| `lock_version`      | 更新バージョン   | integer     | 不可 | 0       | CHECK・楽観ロック        | Rails            |
+| `created_at`        | 作成日時         | datetime(6) | 不可 | —       | —                        | Rails            |
+| `updated_at`        | 更新日時         | datetime(6) | 不可 | —       | —                        | Rails            |
 
-- 暫定：`UNIQUE(store_id, stock_location_id, business_date)`
-- ステータス候補：`draft / confirmed`
-- 再棚卸・複数回実施を認める場合は一意性を再設計する。
-- 確定時に、必要な明細がすべて入力されていることをServiceで検証する。
-- 1つの保管場所を複数スタッフ・ポジションが分担して棚卸できる構造とする。
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(store_id) REFERENCES stores(id)`
+- `FOREIGN KEY(store_id, stock_location_id) REFERENCES stock_locations(store_id, id)`
+- `FOREIGN KEY(store_id, opened_by_id) REFERENCES staffs(store_id, id)`
+- `FOREIGN KEY(store_id, confirmed_by_id) REFERENCES staffs(store_id, id)`
+- `UNIQUE(store_id, id)`：後続テーブルの複合FK参照先
+- `UNIQUE(store_id, stock_location_id, business_date, revision_no)`
+- `CHECK(revision_no >= 1)`
+- `CHECK(lock_version >= 0)`
+- `CHECK(status IN ('draft', 'confirmed'))`
+- `CHECK (revision_reason IS NULL OR btrim(revision_reason) <> '')`
+- `CHECK((status = 'draft' AND confirmed_by_id IS NULL AND confirmed_at IS NULL) OR (status = 'confirmed' AND confirmed_by_id IS NOT NULL AND confirmed_at IS NOT NULL))`
+- `INDEX(store_id, business_date, status)`
+
+次の部分UNIQUEインデックスを追加する。
+
+`UNIQUE(store_id, stock_location_id, business_date) WHERE status = 'draft'`
+
+- `UNIQUE(store_id, stock_location_id, id)`：棚卸明細の複合FK参照先
+
+これにより、同一店舗・同一営業日・同一保管場所に、
+未確定の棚卸が複数存在することを防止する。
+
+最新確定版の参照に備えて、次の部分インデックスを追加する。
+
+`INDEX(store_id, stock_location_id, business_date DESC, revision_no DESC) WHERE status = 'confirmed'`
+
+### 棚卸の管理単位
+
+- 基本単位は店舗×営業日×保管場所とする。
+- 責任ポジション単位でヘッダーを分割しない。
+- 1つのヘッダーに複数の食材明細を持つ。
+- 1つのヘッダーを複数スタッフで分担できる。
+- 実際に食材を数えたスタッフは明細側で管理する。
+- 食材ごとの棚卸責任ポジションはstock_location_itemsを参照する。
+
+### 棚卸の版管理
+
+- 最初の棚卸はrevision_no=1とする。
+- 確定後の再棚卸・訂正では新しい版を作成する。
+- 第2版以降はrevision_noを1ずつ増やす。
+- revision_reasonは任意入力とする。
+- 通常の再棚卸はdraftとして開始できる。
+- 確定済み棚卸の画面編集は許可する。
+- 確定後の編集内容を保存した場合、新しいconfirmed版を自動作成する。
+- 確定後の編集に管理者承認は必要としない。
+- 過去のconfirmedレコードは直接更新・削除しない。
+- 新しい版には前回確定版の明細を引き継ぐ。
+- 変更していない明細も含めて完全なスナップショットを保存する。
+- 変更前後の数量・変更スタッフ・変更日時を追跡できるようにする。
+- 過去の各版は履歴画面から参照できる。
+- 同時更新では古い内容による上書きを防止する。
+- 未確定のdraftが存在する場合は、その内容を確認してから編集結果を反映する。
+- draftと確定後編集の内容を無条件に上書き・破棄しない。
+
+### 下書きと確定後訂正の競合
+
+- 同じ営業日・保管場所にdraftが存在する場合、別操作による確定版の即時作成を拒否する。
+- 利用者には既存のdraftを編集・確定するよう案内する。
+- 確定版の画面編集では、編集開始時のrevision_noを保持する。
+- 保存時に現在の最新確定revision_noと比較する。
+- 編集開始後に別スタッフが新しい版を確定していた場合、競合として保存を拒否する。
+- 競合時は最新データを再取得し、変更内容を確認できるようにする。
+- 同じ棚卸明細への同時更新はlock_versionで検出する。
+
+### 最新確定版の選択
+
+- 店舗・保管場所・営業日ごとに確定版を取得する。
+- 同じ営業日に複数の確定版がある場合、revision_noが最大のものを採用する。
+- draftは在庫照会の集計対象としない。
+- 過去の確定版は履歴として保存するが、最新数量の集計では重複加算しない。
+- 対象営業日以前の最新確定版を在庫照会に使用する。
+- 異なる営業日の比較ではbusiness_dateを優先し、同一営業日内ではrevision_noを使用する。
+- 再棚卸の確定日時だけを理由に、後日の営業日の棚卸を上書きしない。
+
+### 状態遷移
+
+許可する操作：
+
+- 新規作成 → draft
+- draft → draft（編集・保存）
+- draft → confirmed（確定）
+- confirmedの画面編集 → 新しいconfirmed版を作成
+- confirmedから手動再棚卸 → 新しいdraft版を作成
+
+禁止する操作：
+
+- 既存のconfirmedレコードをdraftに戻す
+- 既存のconfirmedレコードの数量を直接上書きする
+- 既存のconfirmedレコードを物理削除する
+
+### 確定後の編集
+
+- 確定済み棚卸は画面から編集可能とする。
+- 編集時に追加の承認は要求しない。
+- 編集内容の保存時に新しいrevision_noの確定版を自動作成する。
+- 新しい確定版のconfirmed_by_idには保存操作を行ったスタッフを設定する。
+- confirmed_atには保存時の日時を設定する。
+- 訂正理由の入力は任意とする。
+- 編集前の確定版は履歴として保持する。
+- 訂正後の数量は最新確定在庫として取得する。
+- 保存処理はDBトランザクション内で実行する。
+- 競合が発生した場合は自動上書きせず、再取得を促す。
+
+### 確定条件
+
+確定時はServiceで以下を検証する。
+
+1. 操作スタッフが認証済みかつ有効である。
+2. 通常の確定では棚卸ヘッダーがdraftである。
+3. 確定後編集では元のconfirmedを直接変更せず、新しいconfirmed版を作成する。
+4. 対象保管場所が同一店舗に所属する。
+5. 必須の棚卸明細がそろっている。
+6. 必要な実測数量がすべて入力されている。
+7. 実測数量に負数・不正な精度が含まれない。
+8. 記録元に応じた実施者・実施日時・入力者の記録条件を満たしている。
+9. 棚卸開始後に対象が変化した場合、整合性を再検証する。
+10. 他の処理による確定・訂正との競合がない。
+11. 店舗・営業日・保管場所の版番号が重複しない。
+
+未確認NULLは確定できない。
+実測数量0は有効な確認済み数量として扱う。
+
+確定処理はDBトランザクション内で実行する。
+確定者・確定日時・ステータスの更新を一括して確定する。
+
+### 同時更新・競合防止
+
+- lock_versionによる楽観ロックを使用する。
+- 確定時は棚卸ヘッダーを行ロックして状態を再確認する。
+- 明細更新時も同じヘッダーの状態とロックを確認する。
+- 確定処理中に明細が変更されないよう、同じロック規約を使用する。
+- 新しいrevision_noの採番はトランザクションで行う。
+- 採番時は対象stock_locationsの行ロックで同時作成を直列化する。
+- UNIQUE制約による重複拒否を最終防衛線とする。
+- 競合時は処理をロールバックし、利用者へ再取得を促す。
+
+### 店舗境界
+
+- store_idは認証済みスタッフの店舗からRails側で決定する。
+- クライアント指定のstore_idは信用しない。
+- 保管場所、作成者、確定者は同一店舗に所属する。
+- 複合FKによって他店舗の関連付けを防止する。
+- 他店舗の棚卸一覧・詳細の参照と更新を拒否する。
+
+### 監査・削除方針
+
+- 棚卸の作成・確定・再棚卸を監査対象とする。
+- 確定済み棚卸は物理削除しない。
+- 確定済み棚卸の修正は新しい版として保存する。
+- 再棚卸・訂正理由が入力された場合は保持する。
+- 訂正理由の有無にかかわらず、変更者・変更日時・変更前後の数量を追跡可能とする。
+- どの版が有効な最新確定版かを照会時に判定する。
+
+### アソシエーション
+
+- `belongs_to :store`
+- `belongs_to :stock_location`
+- `belongs_to :opened_by, class_name: "Staff"`
+- `belongs_to :confirmed_by, class_name: "Staff", optional: true`
+- `has_many :inventory_count_lines`
+
+stock_locations側：
+
+- `has_many :inventory_counts`
+
+staffs側：
+
+- `has_many :opened_inventory_counts, class_name: "InventoryCount", foreign_key: :opened_by_id`
+- `has_many :confirmed_inventory_counts, class_name: "InventoryCount", foreign_key: :confirmed_by_id`
+
+### 設計判断
+
+採用：同一営業日内の複数確定版をrevision_noで管理する。
+
+理由：
+
+- 確定済みの実績を直接上書きしない。
+- 再棚卸・訂正履歴を保持できる。
+- 最新確定版だけを選択して集計できる。
+- 新しい訂正専用テーブルを初期段階で増やさずに済む。
+
+留意点：
+
+- 明細は各版に完全なスナップショットとして保持する。
+- 版の作成時には前回確定版が存在することを検証する。
+- 初版のrevision_noは1とする。
+- 新しい版番号は現在の最大番号+1とし、連番の重複を禁止する。
+- 物理削除をしないため、版番号を再利用しない。
 
 ## 12. `inventory_count_lines`（日次在庫確認明細）
 
-**責務：** 食材の実測数量・品質・棚卸実施者と日時を記録する。
+**責務：** 食材ごとの実測数量、品質状態、棚卸実施者、入力者、棚卸当時の情報を記録する。
 
-| カラム名                           | 日本語名                 | 型            | NULL | DEFAULT | Option                    |
-| ---------------------------------- | ------------------------ | ------------- | ---- | ------- | ------------------------- |
-| `inventory_count_id`               | 棚卸ID                   | bigint        | 不可 | —       | FK → inventory_counts     |
-| `stock_location_item_id`           | 保管場所別食材ID         | bigint        | 不可 | —       | FK → stock_location_items |
-| `measured_quantity`                | 実測数量                 | decimal(12,3) | 可   | —       | CHECK候補                 |
-| `quality_status`                   | 食材状態                 | string(30)    | 可   | —       |                           |
-| `quality_note`                     | 食材状態メモ             | text          | 可   | —       |                           |
-| `counted_by_id`                    | 実際の棚卸スタッフID     | bigint        | 可   | —       | FK → staffs               |
-| `counted_at`                       | 実際の棚卸日時           | datetime      | 可   | —       |                           |
-| `entered_by_id`                    | システム入力スタッフID   | bigint        | 可   | —       | FK → staffs               |
-| `responsible_position_id_snapshot` | 棚卸時の責任ポジションID | bigint        | 可   | —       | FK → positions            |
-| `lock_version`                     | 更新バージョン           | integer       | 不可 | 0       | 楽観ロック                |
+**対応Issue：** #6
 
-**制約・備考**
+**対応要件：** FR-03、FR-04
 
+**実装フェーズ：** Phase 1
+
+| カラム名                           | 日本語名                 | 型            | NULL | DEFAULT | Option        | 設定元        |
+| ---------------------------------- | ------------------------ | ------------- | ---- | ------- | ------------- | ------------- |
+| `id`                               | 棚卸明細ID               | bigint        | 不可 | DB採番  | PK            | DB            |
+| `store_id`                         | 店舗ID                   | bigint        | 不可 | —       | FK            | Rails         |
+| `stock_location_id`                | 保管場所ID               | bigint        | 不可 | —       | 複合FK        | Rails         |
+| `inventory_count_id`               | 棚卸ヘッダーID           | bigint        | 不可 | —       | 複合FK        | Rails         |
+| `stock_location_item_id`           | 保管場所別食材ID         | bigint        | 不可 | —       | 複合FK        | Rails         |
+| `measured_quantity`                | 実測数量                 | decimal(12,3) | 可   | NULL    | CHECK         | 入力者        |
+| `item_name_snapshot`               | 棚卸時の食材名           | string(150)   | 不可 | —       | CHECK         | Rails         |
+| `base_unit_snapshot`               | 棚卸時の基準単位         | string(20)    | 不可 | —       | CHECK         | Rails         |
+| `quality_status`                   | 品質状態                 | string(30)    | 可   | NULL    | CHECK         | 入力者        |
+| `quality_note`                     | 品質メモ                 | text          | 可   | NULL    | —             | 入力者        |
+| `count_source`                     | 記録元                   | string(30)    | 可   | NULL    | CHECK         | Rails         |
+| `source_note`                      | 記録元の補足             | text          | 可   | NULL    | —             | 入力者        |
+| `source_line_id`                   | 元となった棚卸明細ID     | bigint        | 可   | NULL    | 複合FK・CHECK | Rails         |
+| `counted_by_id`                    | 実際に数えたスタッフ     | bigint        | 可   | NULL    | 複合FK        | Rails         |
+| `counted_at`                       | 実際に数えた日時         | datetime(6)   | 可   | NULL    | —             | Rails・入力者 |
+| `entered_by_id`                    | システム入力スタッフ     | bigint        | 可   | NULL    | 複合FK        | Rails         |
+| `entered_at`                       | システム入力日時         | datetime(6)   | 可   | NULL    | CHECK         | Rails         |
+| `responsible_position_id_snapshot` | 棚卸時の責任ポジションID | bigint        | 不可 | —       | 複合FK        | Rails         |
+| `lock_version`                     | 更新バージョン           | integer       | 不可 | 0       | CHECK         | Rails         |
+| `created_at`                       | 作成日時                 | datetime(6)   | 不可 | —       | —             | Rails         |
+| `updated_at`                       | 更新日時                 | datetime(6)   | 不可 | —       | —             | Rails         |
+
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(store_id) REFERENCES stores(id)`
+- `FOREIGN KEY(store_id, stock_location_id, inventory_count_id) REFERENCES inventory_counts(store_id, stock_location_id, id)`
+- `FOREIGN KEY(store_id, stock_location_id, stock_location_item_id) REFERENCES stock_location_items(store_id, stock_location_id, id)`
+- `FOREIGN KEY(store_id, counted_by_id) REFERENCES staffs(store_id, id)`
+- `FOREIGN KEY(store_id, entered_by_id) REFERENCES staffs(store_id, id)`
+- `FOREIGN KEY(store_id, responsible_position_id_snapshot) REFERENCES positions(store_id, id)`
+- `FOREIGN KEY(store_id, source_line_id) REFERENCES inventory_count_lines(store_id, id)`
+- `UNIQUE(store_id, id)`
 - `UNIQUE(inventory_count_id, stock_location_item_id)`
-- `CHECK(measured_quantity >= 0)` を検討。
-- 下書き中は数量NULLを許可し、**未確認と数量0を区別**する。
-- 確定時には必要な数量・実施者・日時が記録されていることを検証する。
-- 棚卸ヘッダーの保管場所と明細の保管場所別食材が一致するよう検証する。
-- 紙で数えた人と入力した人が異なる場合を想定する。
-- `responsible_position_id_snapshot` は責任ポジション変更後の履歴整合性を目的とする候補であり、最終的な保持方法はIssue #6で確定する。
+- `CHECK(measured_quantity >= 0)`
+- `CHECK(lock_version >= 0)`
+- `CHECK(btrim(item_name_snapshot) <> '')`
+- `CHECK(btrim(base_unit_snapshot) <> '')`
+- `CHECK(quality_status IS NULL OR quality_status IN ('good', 'caution', 'discard_candidate'))`
+- `CHECK(count_source IS NULL OR count_source IN ('direct', 'paper', 'carried_forward', 'corrected'))`
+- `CHECK(measured_quantity IS NULL OR (count_source IS NOT NULL AND entered_by_id IS NOT NULL AND entered_at IS NOT NULL))`
+- `CHECK(count_source IS DISTINCT FROM 'direct' OR (counted_by_id IS NOT NULL AND counted_at IS NOT NULL))`
+- `CHECK ((source_line_id IS NULL AND (count_source IS NULL OR count_source IN ('direct', 'paper')))OR(source_line_id IS NOT NULL AND count_source IS NOT NULL AND count_source IN ('carried_forward', 'corrected')))`
+- `INDEX(store_id, stock_location_item_id, inventory_count_id)`
+- `INDEX(store_id, counted_by_id, counted_at)`
+
+### 保管場所・店舗の一致
+
+棚卸ヘッダーと棚卸明細は、同じ保管場所に所属する。
+
+そのため、明細にstore_idとstock_location_idを保持し、
+以下の2つの複合FKで整合性を保証する。
+
+- 棚卸ヘッダーの店舗・保管場所・ID
+- 保管場所別食材の店舗・保管場所・ID
+
+単純なinventory_count_idとstock_location_item_idの
+FKだけでは、異なる保管場所の食材を
+同じ棚卸に登録することをDB制約だけで防げない。
+
+重複するstore_idとstock_location_idは
+クライアントから受け取らずRails側で設定する。
+
+### 棚卸数量
+
+- 数量の基準単位はitems.base_unitとする。
+- measured_quantityはdecimal(12,3)で保存する。
+- NULLは未確認を表す。
+- 0は実測済みの数量0を表す。
+- 負数を禁止する。
+- 個、本、袋、缶、箱は整数数量のみ許可する。
+- 不正な小数精度は保存前にServiceで拒否する。
+- 下書き中は数量未入力を許可する。
+- 確定時は必要な明細すべてに数量が必要となる。
+
+PostgreSQLのnumeric型は小数桁を丸める場合があるため、
+入力精度の検証はDB保存前にも行う。
+
+### 品質状態
+
+| コード              | 意味     |
+| ------------------- | -------- |
+| `good`              | 良好     |
+| `caution`           | 要注意   |
+| `discard_candidate` | 廃棄候補 |
+
+- 品質状態はNULLを許可する。
+- 品質メモは自由記述とする。
+- 廃棄候補であることだけでロス記録を自動作成しない。
+- ロス実績はloss_recordsで別途記録する。
+
+### 記録元
+
+| コード            | 意味                         |
+| ----------------- | ---------------------------- |
+| `direct`          | システム上で実測して入力     |
+| `paper`           | 紙の棚卸結果を転記           |
+| `carried_forward` | 前版の数量を変更せず引き継ぐ |
+| `corrected`       | 前版の数量や内容を訂正       |
+
+- directの場合はcounted_by_idとcounted_atを必須とする。
+- paperの場合は実際の実施者・日時が不明でも登録可能とする。
+- paperで実施者または日時が不明な場合はsource_noteを必須とする。
+- carried_forwardとcorrectedではsource_line_idを必須とする。
+- source_line_idの参照先は同一店舗とする。
+- 元明細は同じ保管場所別食材の過去版でなければならない。
+- source_line_idが参照する版の前後関係はServiceで検証する。
+- copiedされた数量を新たな実測として扱わない。
+- correctedの訂正理由は任意とし、入力された場合は棚卸ヘッダーのrevision_reasonに保持する。
+- 訂正理由の有無にかかわらず、訂正前後の明細と変更者・変更日時を追跡できるようにする。
+
+### 実施者と入力者
+
+- counted_by_idは実際に食材を数えたスタッフを表す。
+- counted_atは実際の計測日時を表す。
+- entered_by_idはシステムへ入力したスタッフを表す。
+- entered_atはシステムへの入力日時を表す。
+- 実施者と入力者が異なっていてもよい。
+- paperで実施者が不明な場合はcounted_by_idをNULLにできる。
+- confirmedの明細ではentered_by_idとentered_atを必須とする。
+- 有効な同一店舗スタッフは、担当ポジションにかかわらず代理棚卸できる。
+- 実施者と入力者は別々に記録する。
+- 他店舗のスタッフによる操作は禁止する。
+
+### 履歴スナップショット
+
+- item_name_snapshotには記録当時の食材名を保持する。
+- base_unit_snapshotには記録当時の基準単位を保持する。
+- responsible_position_id_snapshotには記録当時の責任ポジションIDを保持する。
+- 新規計測では実測情報を登録した時点でスナップショットを確定する。
+- 再棚卸で前版を引き継ぐ場合、元の実測日時と実施者は保持する。
+- 引き継ぎ後に新たに計測した場合は、実測情報とスナップショットを更新する。
+- 確定済み明細のスナップショットは変更しない。
+- 現在のマスタ情報が変更されても過去の確定記録に影響させない。
+
+### 版管理と二重計上防止
+
+- 同じ棚卸ヘッダーに同じstock_location_item_idを複数登録しない。
+- 初版と訂正版は異なるinventory_count_idを持つ。
+- 訂正版は各対象食材を含む完全なスナップショットとする。
+- 最新確定版の数量だけを在庫照会に使用する。
+- 過去版は履歴として保持し、数量を重複加算しない。
+- 同じ食材を使用するポジション数で数量を増やさない。
+
+### 同時更新
+
+- 明細の更新にはlock_versionによる楽観ロックを使用する。
+- 明細の作成・更新時は棚卸ヘッダーの状態も確認する。
+- ヘッダーと明細の変更は共通のトランザクション規約に従う。
+- 確定処理中の明細更新は許可しない。
+- 確定済みヘッダーの明細を直接更新しない。
+- 競合時は処理を中断し、利用者に再取得を促す。
+
+### アソシエーション
+
+- `belongs_to :store`
+- `belongs_to :stock_location`
+- `belongs_to :inventory_count`
+- `belongs_to :stock_location_item`
+- `belongs_to :counted_by, class_name: "Staff", optional: true`
+- `belongs_to :entered_by, class_name: "Staff", optional: true`
+- `belongs_to :responsible_position_snapshot, class_name: "Position", foreign_key: :responsible_position_id_snapshot`
+- `belongs_to :source_line, class_name: "InventoryCountLine", optional: true`
+
+棚卸ヘッダー側：
+
+- `has_many :inventory_count_lines`
+
+保管場所別食材側：
+
+- `has_many :inventory_count_lines`
+
+### 削除・監査方針
+
+- 確定済み明細は物理削除しない。
+- 確定済み明細は直接編集しない。
+- 訂正は新しい棚卸版で管理する。
+- 実測者・入力者・数量変更を追跡できるようにする。
+- 重要な変更操作はaudit_eventsへ保存する。
 
 ## 13. `loss_records`（ロス記録）
 
-**責務：** 食材の廃棄・破損・腐敗等の実績を管理する。
+**責務：** 食材の廃棄・破損・腐敗などのロス実績と訂正履歴を管理する。
 
-| カラム名                 | 日本語名         | 型            | NULL | DEFAULT | Option                    |
-| ------------------------ | ---------------- | ------------- | ---- | ------- | ------------------------- |
-| `store_id`               | 店舗ID           | bigint        | 不可 | —       | FK → stores               |
-| `stock_location_item_id` | 保管場所別食材ID | bigint        | 不可 | —       | FK → stock_location_items |
-| `quantity`               | ロス数量         | decimal(12,3) | 不可 | —       | CHECK > 0                 |
-| `reason_code`            | ロス理由コード   | string(30)    | 不可 | —       |                           |
-| `occurred_at`            | ロス発生日時     | datetime      | 不可 | —       |                           |
-| `reported_by_id`         | 登録スタッフID   | bigint        | 不可 | —       | FK → staffs               |
-| `memo`                   | 備考             | text          | 可   | —       |                           |
+**対応Issue：** #6
 
-**制約・備考**
+**対応要件：** FR-05、FR-04
 
+**実装フェーズ：** Phase 1
+
+| カラム名                  | 日本語名               | 型            | NULL | DEFAULT  | Option     | 設定元        |
+| ------------------------- | ---------------------- | ------------- | ---- | -------- | ---------- | ------------- |
+| `id`                      | ロス記録ID             | bigint        | 不可 | DB採番   | PK         | DB            |
+| `store_id`                | 店舗ID                 | bigint        | 不可 | —        | FK         | Rails         |
+| `stock_location_item_id`  | 保管場所別食材ID       | bigint        | 不可 | —        | 複合FK     | 入力者        |
+| `business_date`           | 対象営業日             | date          | 不可 | —        | INDEX      | 入力者・Rails |
+| `quantity`                | ロス数量               | decimal(12,3) | 不可 | —        | CHECK      | 入力者        |
+| `reason_code`             | ロス理由               | string(30)    | 不可 | —        | CHECK      | 入力者        |
+| `occurred_at`             | ロス発生日時           | datetime(6)   | 不可 | —        | INDEX      | 入力者        |
+| `reported_by_id`          | ロス報告スタッフID     | bigint        | 不可 | —        | 複合FK     | 入力者        |
+| `entered_by_id`           | システム登録スタッフID | bigint        | 不可 | —        | 複合FK     | Rails         |
+| `item_name_snapshot`      | 記録時の食材名         | string(150)   | 不可 | —        | CHECK      | Rails         |
+| `base_unit_snapshot`      | 記録時の基準単位       | string(20)    | 不可 | —        | CHECK      | Rails         |
+| `memo`                    | 備考                   | text          | 可   | NULL     | —          | 入力者        |
+| `status`                  | 記録状態               | string(20)    | 不可 | recorded | CHECK      | Rails         |
+| `voided_at`               | 取消日時               | datetime(6)   | 可   | NULL     | CHECK      | Rails         |
+| `voided_by_id`            | 取消スタッフID         | bigint        | 可   | NULL     | 複合FK     | Rails         |
+| `void_reason`             | 取消理由               | text          | 可   | NULL     | CHECK      | 入力者        |
+| `replaces_loss_record_id` | 訂正元ロス記録ID       | bigint        | 可   | NULL     | 自己参照FK | Rails         |
+| `request_key`             | 重複送信防止キー       | uuid          | 不可 | —        | 複合UNIQUE | クライアント  |
+| `lock_version`            | 更新バージョン         | integer       | 不可 | 0        | CHECK      | Rails         |
+| `created_at`              | 登録日時               | datetime(6)   | 不可 | —        | —          | Rails         |
+| `updated_at`              | 更新日時               | datetime(6)   | 不可 | —        | —          | Rails         |
+
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(store_id) REFERENCES stores(id)`
+- `FOREIGN KEY(store_id, stock_location_item_id) REFERENCES stock_location_items(store_id, id)`
+- `FOREIGN KEY(store_id, reported_by_id) REFERENCES staffs(store_id, id)`
+- `FOREIGN KEY(store_id, entered_by_id) REFERENCES staffs(store_id, id)`
+- `FOREIGN KEY(store_id, voided_by_id) REFERENCES staffs(store_id, id)`
+- `FOREIGN KEY(store_id, replaces_loss_record_id) REFERENCES loss_records(store_id, id)`
+- `UNIQUE(store_id, id)`
+- `UNIQUE(store_id, request_key)`
+- `UNIQUE(replaces_loss_record_id)`
 - `CHECK(quantity > 0)`
-- ロス理由の候補：廃棄、破損、腐敗、その他。
-- ロスと棚卸結果から使用量を算出する場合は、二重控除しない計算方法を定義する。
+- `CHECK(lock_version >= 0)`
+- `CHECK(btrim(item_name_snapshot) <> '')`
+- `CHECK(btrim(base_unit_snapshot) <> '')`
+- `CHECK(reason_code IN ('disposal', 'damage', 'spoilage', 'other'))`
+- `CHECK(reason_code <> 'other' OR (memo IS NOT NULL AND btrim(memo) <> ''))`
+- `CHECK(status IN ('recorded', 'voided'))`
+- `CHECK(replaces_loss_record_id IS NULL OR replaces_loss_record_id <> id)`
+
+取消状態の整合性には次のCHECKを使用する。
+
+```sql
+CHECK (
+  (
+    status = 'recorded'
+    AND voided_at IS NULL
+    AND voided_by_id IS NULL
+    AND void_reason IS NULL
+  )
+  OR
+  (
+    status = 'voided'
+    AND voided_at IS NOT NULL
+    AND voided_by_id IS NOT NULL
+    AND void_reason IS NOT NULL
+    AND btrim(void_reason) <> ''
+  )
+)
+```
+
+検索用INDEX：
+
+- `INDEX(store_id, business_date, status)`
+- `INDEX(store_id, stock_location_item_id, business_date)`
+- `INDEX(store_id, reported_by_id, occurred_at)`
+
+### ロス理由
+
+| コード     | 日本語表示 |
+| ---------- | ---------- |
+| `disposal` | 廃棄       |
+| `damage`   | 破損       |
+| `spoilage` | 腐敗       |
+| `other`    | その他     |
+
+- その他を選択した場合は備考を必須とする。
+- ロス理由と品質状態は別々に管理する。
+- 品質状態が廃棄候補であるだけではロス実績に含めない。
+- 実際に廃棄・破損等が発生したときにロス記録を作成する。
+
+### 営業日と発生日時
+
+- business_dateはロスを帰属させる店舗営業日とする。
+- occurred_atは実際にロスが発生した日時とする。
+- created_atはシステムに登録した日時とする。
+- 発生日時と登録日時が異なることを許可する。
+- 過去営業日のロスを後から登録することを許可する。
+- 店舗の営業日は暦日と一致するとは限らない。
+- business_dateの確定方法は店舗の営業日ルールに従う。
+- occurred_atとbusiness_dateの整合性をServiceで検証する。
+- ロス集計では営業日と登録日時を混同しない。
+
+### 数量と基準単位
+
+- quantityはitems.base_unitに対応する数量を保存する。
+- quantityはdecimal(12,3)とする。
+- 数量0および負数は禁止する。
+- 個数単位は整数のみ許可する。
+- 入力精度はDB保存前にServiceで検証する。
+- 登録時の食材名と基準単位をスナップショット保存する。
+- 基準単位の異なる数量は直接加算しない。
+- ロス記録の登録によって棚卸明細の実測数量を変更しない。
+
+### 登録時の検証
+
+- 操作スタッフが認証済みである。
+- 操作スタッフが登録権限を持つ。
+- 店舗・保管場所別食材・報告者が同一店舗に所属する。
+- 対象食材が有効な状態である。
+- 数量と基準単位が整合している。
+- 発生日時と営業日の対応が妥当である。
+- ロス理由が許可された値である。
+- request_keyによる重複送信を防止する。
+
+### 二重登録の防止
+
+- 1回のロス登録操作に1つのrequest_keyを割り当てる。
+- 通信失敗による同一操作の再送では同じrequest_keyを使用する。
+- UNIQUE(store_id, request_key)で重複登録を防ぐ。
+- 再送時は既存登録を確認し、二重加算しない。
+- 別々に発生したロスは同じ食材・同じ営業日でも登録可能とする。
+- 異なるrequest_keyで登録された業務上の重複は、確認・取消操作で解消する。
+
+### ロス記録の訂正・取消
+
+- 登録済みの数量・理由・発生日時を直接書き換えない。
+- 誤登録を取り消す場合はstatusをvoidedに変更する。
+- 取消時はvoided_by_id、voided_at、void_reasonを必須とする。
+- 取り消した記録も物理削除しない。
+- 訂正する場合は元記録を取り消し、新しいロス記録を作成する。
+- 新しい記録のreplaces_loss_record_idに訂正元IDを保存する。
+- 訂正元と訂正後は同じ店舗・保管場所別食材に限定する。
+- 1つの訂正元に対して複数の訂正後レコードを作成しない。
+- 取り消しと訂正版の登録は同一トランザクションで行う。
+- 訂正版は新しいrequest_keyを使用する。
+- 訂正済みレコードをさらに訂正する場合も同じ方式を使用する。
+- 取消済みレコードを再度取消できない。
+- 重要操作はaudit_eventsへ保存する。
+
+### 在庫照会との関係
+
+- ロス記録は実測在庫を自動的に減算するデータではない。
+- 最新確定在庫は棚卸の実測数量から取得する。
+- ロスが発生しても過去の棚卸数量は変更しない。
+- ロスの登録・取消・訂正は、ロス実績の集計結果に反映する。
+- 通常のロス集計ではstatus=recordedのみ採用する。
+- status=voidedは履歴照会の対象とし、通常の集計から除外する。
+- 推定使用量の算定に利用する場合は、棚卸の計測区間に発生したロスのみを対象とする。
+
+### 推定使用量との関係
+
+将来の推定使用量では、次の数量を区別する。
+
+- 期首の確定棚卸数量
+- 期末の確定棚卸数量
+- 期間中の入庫数量
+- 期間中の保管場所間移動
+- 期間中のロス数量
+
+ロス発生後に実測した期末棚卸数量には、
+すでに物理的な数量減少が反映されている。
+
+したがって、ロス数量を期末実測数量から
+再度差し引いてはならない。
+
+概念上の算定式：
+
+推定業務使用量 = 期首数量 + 入庫数量 + 移動入数量 - 移動出数量 - 期末数量 - ロス数量
+
+- 移動出数量 - 期末数量 - ロス数量
+
+ただし、この式は以下を前提とする。
+
+- 期首と期末が独立した実測値である。
+- 入出庫とロスの対象期間が一致している。
+- ロスが期末実測に反映されている。
+- 他の在庫増減や計測差異を別途考慮している。
+- ロスの訂正・取消が反映済みである。
+
+必要なデータがそろわない場合は、
+推定業務使用量を確定値として表示しない。
+
+Phase 1ではロス実績の記録を主目的とし、
+推定使用量の本格算定は後続の発注支援設計で扱う。
+
+### 店舗境界と認可
+
+- store_idは認証済みスタッフの所属店舗から決定する。
+- クライアント指定のstore_idは信用しない。
+- 他店舗の保管場所別食材を登録できない。
+- 他店舗のスタッフを報告者・入力者・取消者に指定できない。
+- 他店舗のロス記録の参照・訂正・取消は禁止する。
+- 取消・訂正は許可された権限を持つスタッフのみ実行する。
+
+### 同時更新・トランザクション
+
+- lock_versionによる楽観ロックを使用する。
+- 取消前に現在のstatusを確認する。
+- 二重取消・同時訂正を拒否する。
+- 訂正元の取消、訂正版の登録、監査記録を
+  同一トランザクションで処理する。
+- 途中で失敗した場合は全体をロールバックする。
+- request_keyのUNIQUE制約を重複送信防止の最終防衛線とする。
+
+### アソシエーション
+
+- `belongs_to :store`
+- `belongs_to :stock_location_item`
+- `belongs_to :reported_by, class_name: "Staff"`
+- `belongs_to :entered_by, class_name: "Staff"`
+- `belongs_to :voided_by, class_name: "Staff", optional: true`
+- `belongs_to :replaces_loss_record, class_name: "LossRecord", optional: true`
+
+stock_location_items側：
+
+- `has_many :loss_records`
+
+staffs側：
+
+- `has_many :reported_loss_records, class_name: "LossRecord", foreign_key: :reported_by_id`
+- `has_many :entered_loss_records, class_name: "LossRecord", foreign_key: :entered_by_id`
+- `has_many :voided_loss_records, class_name: "LossRecord", foreign_key: :voided_by_id`
+
+### 削除方針
+
+- ロス記録は物理削除しない。
+- 訂正・取消履歴を保持する。
+- 関連先の物理削除は原則RESTRICTとする。
 
 ## 14. `audit_events`（操作・変更監査履歴）
 
