@@ -165,6 +165,7 @@
 - ロス訂正の`target_id`は訂正後ロスID、訂正元ロスIDは`before_data`から参照する。
 - 下書き明細の削除監査では、削除前に対象を検証し、必要な識別情報を`before_data`に残す。
 - 監査イベントは追記専用。対象が退職・無効化されても監査履歴は保持する。
+
 ---
 
 ## 6. Phase 2：承認・在庫移動
@@ -184,33 +185,58 @@
 
 ## 7. Phase 2：仕入先・発注・納品
 
-| 子テーブル（日本語名）              | 外部キー → 親テーブル                             | 関係・説明                                                    |
-| ----------------------------------- | ------------------------------------------------- | ------------------------------------------------------------- |
-| `suppliers`（仕入先）               | `store_id` → `stores`                             | **1対多**。1店舗が複数の仕入先と取引する                      |
-| `supplier_items`（仕入先別商品）    | `supplier_id` → `suppliers`                       | **1対多**。1社が複数の商品を扱う                              |
-| `supplier_items`（仕入先別商品）    | `item_id` → `items`                               | **1対多**。1つの食材を複数の仕入先から購入できる              |
-| `purchase_orders`（発注書）         | `store_id` → `stores`                             | **1対多**。1店舗で複数の発注書を作成する                      |
-| `purchase_orders`（発注書）         | `supplier_id` → `suppliers`                       | **1対多**。1社の仕入先に複数回発注できる                      |
-| `purchase_orders`（発注書）         | `ordering_position_id` → `positions`              | **1対多**。1つのポジションが複数の発注書を取りまとめる        |
-| `purchase_orders`（発注書）         | `requested_by_id` → `staffs`                      | **1対多**。1人のスタッフが複数の発注書を作成する              |
-| `purchase_order_lines`（発注明細）  | `purchase_order_id` → `purchase_orders`           | **1対多**。1件の発注書に複数の商品明細が含まれる              |
-| `purchase_order_lines`（発注明細）  | `supplier_item_id` → `supplier_items`             | **1対多**。1つの取扱商品を複数回発注できる                    |
-| `purchase_order_lines`（発注明細）  | `requested_by_position_id` → `positions`          | **1対多・任意**。どのポジションから追加発注依頼があったか示す |
-| `order_approval_events`（承認履歴） | `purchase_order_id` → `purchase_orders`           | **1対多**。1件の発注に複数の承認・差戻し履歴を持てる          |
-| `order_approval_events`（承認履歴） | `actor_id` → `staffs`                             | **1対多**。1人のスタッフが複数の承認操作を行える              |
-| `receipts`（納品・検品）            | `purchase_order_id` → `purchase_orders`           | **1対多**。1件の発注書に複数回の分納実績を紐付けられる        |
-| `receipts`（納品・検品）            | `received_by_id` → `staffs`                       | **1対多**。1人のスタッフが複数回の検品を行える                |
-| `receipt_lines`（検品明細）         | `receipt_id` → `receipts`                         | **1対多**。1回の納品に複数の商品明細が含まれる                |
-| `receipt_lines`（検品明細）         | `purchase_order_line_id` → `purchase_order_lines` | **1対多**。1件の発注明細を複数回に分けて納品できる            |
-| `receipt_lines`（検品明細）         | `stock_location_id` → `stock_locations`           | **1対多**。1つの保管場所に複数の検品明細から入庫できる        |
+| 子テーブル（日本語名）                            | 外部キー → 親テーブル                             | 関係・説明                                                                  |
+| ------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------- |
+| `suppliers`（仕入先）                             | `store_id` → `stores`                             | **1対多**。1店舗が複数の仕入先と取引する                                    |
+| `supplier_items`（仕入先別商品）                  | `supplier_id` → `suppliers`                       | **1対多**。1社が複数の商品を扱う                                            |
+| `supplier_items`（仕入先別商品）                  | `item_id` → `items`                               | **1対多**。1つの食材を複数の仕入先から購入できる                            |
+| `purchase_orders`（発注書）                       | `store_id` → `stores`                             | **1対多**。1店舗で複数の発注書を作成する                                    |
+| `purchase_orders`（発注書）                       | `supplier_id` → `suppliers`                       | **1対多**。1社の仕入先に複数回発注できる                                    |
+| `purchase_orders`（発注書）                       | `ordering_position_id` → `positions`              | **1対多**。1つのポジションが複数の発注書を取りまとめる                      |
+| `purchase_orders`（発注書）                       | `requested_by_id` → `staffs`                      | **1対多**。1人のスタッフが複数の発注書を作成する                            |
+| `purchase_orders`（発注書）                       | `sending_assignee_id` → `staffs`                  | **1対多・任意**。送信担当者を発注書ごとに指定する                            |
+| `purchase_orders`（発注書）                       | `sent_by_id` → `staffs`                           | **1対多・任意**。FAX送信を記録したスタッフを保持する                          |
+| `purchase_order_lines`（発注明細）                | `purchase_order_id` → `purchase_orders`           | **1対多**。1件の発注書に複数の商品明細が含まれる                            |
+| `purchase_order_lines`（発注明細）                | `supplier_item_id` → `supplier_items`             | **1対多**。1つの取扱商品を複数回発注できる                                  |
+| `purchase_order_lines`（発注明細）                | `cancelled_by_id` → `staffs`                      | **1対多・任意**。明細取消を記録したスタッフを保持する                         |
+| `purchase_order_requests`（発注依頼明細）         | `purchase_order_line_id` → `purchase_order_lines` | **1対多**。1つの集約発注明細に複数の依頼明細を紐付ける                      |
+| `purchase_order_requests`（発注依頼明細）         | `requested_by_position_id` → `positions`          | **1対多**。依頼元ポジションを依頼明細ごとに記録する                         |
+| `purchase_order_requests`（発注依頼明細）         | `requested_by_id` → `staffs`                      | **1対多**。依頼したスタッフを依頼明細ごとに記録する                         |
+| `purchase_order_requests`（発注依頼明細）         | `store_id` → `stores`                             | **1対多**。店舗に属する発注依頼明細を管理する                               |
+| `purchase_order_change_proposals`（発注変更提案） | `store_id` → `stores`                             | **1対多**。店舗に属する発注変更提案を管理する                               |
+| `order_approval_events`（承認履歴）               | `purchase_order_id` → `purchase_orders`           | **1対多**。1件の発注に複数の承認・差戻し履歴を持てる                        |
+| `purchase_order_revisions`（発注内容版）           | `purchase_order_id` → `purchase_orders`           | **1対多**。発注書の各版の不変スナップショットを保持する                       |
+| `purchase_order_revisions`（発注内容版）           | `created_by_id` → `staffs`                        | **1対多**。版を作成したスタッフを記録する                                   |
+| `order_task_notifications`（発注期限通知）         | `purchase_order_id` → `purchase_orders`           | **1対多**。発注書の期限超過通知を記録する                                   |
+| `order_task_notifications`（発注期限通知）         | `recipient_id` → `staffs`                         | **1対多**。スタッフごとの通知と重複防止を管理する                            |
+| `order_approval_events`（承認履歴）               | `actor_id` → `staffs`                             | **1対多**。1人のスタッフが複数の承認操作を行える                            |
+| `order_approval_events`（承認履歴）               | `(purchase_order_id, revision_no)` → `purchase_order_revisions` | **多対1**。判断対象となった内容版を固定する |
+| `purchase_order_change_proposals`（発注変更提案） | `purchase_order_id` → `purchase_orders`           | **1対多**。1件の発注に複数の現場提案を記録できる                            |
+| `purchase_order_change_proposals`（発注変更提案） | `purchase_order_line_id` → `purchase_order_lines` | **1対多・任意**。数量変更・明細取消の提案対象を示す。明細追加の提案ではNULL |
+| `purchase_order_change_proposals`（発注変更提案） | `supplier_item_id` → `supplier_items`             | **1対多**。追加・変更提案の対象商品を示す                                   |
+| `purchase_order_change_proposals`（発注変更提案） | `proposed_by_id` → `staffs`                       | **1対多**。提案したスタッフを記録する                                       |
+| `purchase_order_change_proposals`（発注変更提案） | `proposed_by_position_id` → `positions`           | **1対多**。提案時のポジションを記録する                                     |
+| `purchase_order_change_proposals`（発注変更提案） | `decided_by_id` → `staffs`                        | **1対多・任意**。提案を採用・不採用と判断したスタッフを記録する             |
+| `receipts`（納品・検品）                          | `purchase_order_id` → `purchase_orders`           | **1対多**。1件の発注書に複数回の分納実績を紐付けられる                      |
+| `receipts`（納品・検品）                          | `received_by_id` → `staffs`                       | **1対多**。1人のスタッフが複数回の検品を行える                              |
+| `receipt_lines`（検品明細）                       | `receipt_id` → `receipts`                         | **1対多**。1回の納品に複数の商品明細が含まれる                              |
+| `receipt_lines`（検品明細）                       | `purchase_order_line_id` → `purchase_order_lines` | **1対多**。1件の発注明細を複数回に分けて納品できる                          |
+| `receipt_lines`（検品明細）                       | `stock_location_id` → `stock_locations`           | **1対多**。1つの保管場所に複数の検品明細から入庫できる                      |
 
-### 発注集約に関する注意
+### 発注依頼・変更提案の店舗整合性
 
-みりん・醤油・料理酒など、複数ポジションで使用する食材の発注は代表ポジションが取りまとめる。
+- 発注依頼明細の店舗は、紐付く発注書・発注明細・依頼元ポジション・依頼スタッフと一致させる。
+- 発注変更提案の店舗は、紐付く発注書・対象商品・提案者・提案時ポジション・判断者と一致させる。
+- 提案に `purchase_order_line_id` がある場合、その発注明細は同じ発注書に属し、提案対象の商品とも一致させる。
+- 追加提案の商品は、発注書の仕入先が取り扱う商品に限る。
 
-ただし、発注明細1件に複数ポジションの依頼を集約する場合、単独の `requested_by_position_id` では依頼元をすべて保存できない。
+### 発注集約と依頼元の記録
 
-複数の依頼元と数量の履歴を残す必要がある場合、Phase 2で別の依頼明細構造を検討する。
+みりん・醤油・料理酒など、複数ポジションで使用する食材は、仕入先へ送る発注明細に集約できる。
+集約前の依頼は `purchase_order_requests` で個別に保持する。
+各依頼明細には、依頼元ポジション、依頼スタッフ、依頼数量を記録する。
+`purchase_order_lines` は仕入先へ発注する集約後の数量を保持し、依頼明細の数量とは区別する。
+これにより、発注をまとめた後も「どのポジションの誰が、何を、どれだけ依頼したか」を参照できる。
 
 ---
 
