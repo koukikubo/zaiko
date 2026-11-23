@@ -1699,8 +1699,6 @@ CHECK (
 
 推定業務使用量 = 期首数量 + 入庫数量 + 移動入数量 - 移動出数量 - 期末数量 - ロス数量
 
-- 移動出数量 - 期末数量 - ロス数量
-
 ただし、この式は以下を前提とする。
 
 - 期首と期末が独立した実測値である。
@@ -1761,28 +1759,112 @@ staffs側：
 
 ## 14. `audit_events`（操作・変更監査履歴）
 
-**責務：** 在庫訂正・権限変更等の重要操作を追跡する。
+**責務：** 業務レコードの変更を実行した主体・日時・対象・操作内容を追跡する。棚卸数量の正本は`inventory_count_lines`、ロス数量の正本は`loss_records`であり、監査イベントへ全明細を複製しない。
 
-| カラム名      | 日本語名                 | 型          | NULL | DEFAULT | Option      |
-| ------------- | ------------------------ | ----------- | ---- | ------- | ----------- |
-| `store_id`    | 店舗ID                   | bigint      | 不可 | —       | FK → stores |
-| `actor_id`    | 操作スタッフID           | bigint      | 可   | —       | FK → staffs |
-| `action`      | 操作種別                 | string(50)  | 不可 | —       | INDEX候補   |
-| `target_type` | 対象テーブル・モデル種別 | string(100) | 不可 | —       |             |
-| `target_id`   | 対象レコードID           | bigint      | 不可 | —       |             |
-| `before_data` | 変更前データ             | jsonb       | 可   | —       |             |
-| `after_data`  | 変更後データ             | jsonb       | 可   | —       |             |
-| `reason`      | 操作・訂正理由           | text        | 可   | —       |             |
-| `request_id`  | リクエスト識別子         | string(100) | 可   | —       |             |
-| `created_at`  | 記録日時                 | datetime    | 不可 | —       |             |
+**対応Issue：** #7
 
-**制約・備考**
+**対応要件：** FR-03、FR-04、FR-05
 
-- `INDEX(store_id, created_at)`
-- `INDEX(target_type, target_id)`
-- 追記型として扱い、通常の更新・削除を許可しない。
-- パスワード・認証トークン・不要な個人情報を保存しない。
-- `target_type` と `target_id` は通常のFKでは参照整合性を保証できないため、対象特定と履歴保持の方式をIssue #7で検討する。
+**実装フェーズ：** Phase 1
+
+| カラム名       | 日本語名             | 型          | NULL | DEFAULT | Option         | 設定元        |
+| -------------- | -------------------- | ----------- | ---- | ------- | -------------- | ------------- |
+| `id`           | 監査イベントID       | bigint      | 不可 | DB採番  | PK             | DB            |
+| `store_id`     | 店舗ID               | bigint      | 不可 | —       | 複合FKの店舗側 | Rails         |
+| `actor_kind`   | 操作主体区分         | string(20)  | 不可 | staff   | CHECK          | Rails         |
+| `actor_id`     | 操作スタッフID       | bigint      | 可   | NULL    | 複合FK・CHECK  | Rails         |
+| `actor_source` | システム処理識別子   | string(100) | 可   | NULL    | CHECK          | Rails         |
+| `action`       | 操作種別             | string(50)  | 不可 | —       | CHECK          | Rails         |
+| `target_type`  | 対象種別             | string(50)  | 不可 | —       | CHECK          | Rails         |
+| `target_id`    | 対象レコードID       | bigint      | 不可 | —       | CHECK          | Rails         |
+| `before_data`  | 操作前の最小参照情報 | jsonb       | 可   | NULL    | CHECK          | Rails         |
+| `after_data`   | 操作後の最小参照情報 | jsonb       | 可   | NULL    | CHECK          | Rails         |
+| `reason`       | 操作・訂正理由       | text        | 可   | NULL    | CHECK          | 入力者・Rails |
+| `request_id`   | リクエスト識別子     | string(100) | 可   | NULL    | INDEX          | Rails         |
+| `created_at`   | イベント発生記録日時 | datetime(6) | 不可 | —       | INDEX          | Rails         |
+
+### DB制約・INDEX
+
+- `PRIMARY KEY(id)`
+- `FOREIGN KEY(store_id) REFERENCES stores(id)`
+- `FOREIGN KEY(store_id, actor_id) REFERENCES staffs(store_id, id)`
+- `CHECK(actor_kind IN ('staff', 'system'))`
+- `CHECK((actor_kind = 'staff' AND actor_id IS NOT NULL AND actor_source IS NULL) OR (actor_kind = 'system' AND actor_id IS NULL AND actor_source IS NOT NULL AND btrim(actor_source) <> ''))`
+- `CHECK(action IN ('created', 'updated', 'deactivated', 'reactivated', 'confirmed', 'corrected', 'voided', 'linked', 'unlinked', 'draft_line_removed'))`
+- `CHECK(target_type IN ('inventory_count', 'inventory_count_line', 'loss_record', 'stock_location', 'stock_location_item', 'item', 'position', 'staff', 'position_assignment', 'oauth_identity'))`
+- `CHECK(target_id > 0)`
+- `CHECK(before_data IS NULL OR jsonb_typeof(before_data) = 'object')`
+- `CHECK(after_data IS NULL OR jsonb_typeof(after_data) = 'object')`
+- `CHECK(reason IS NULL OR btrim(reason) <> '')`
+- `CHECK(request_id IS NULL OR btrim(request_id) <> '')`
+- `INDEX(store_id, created_at DESC, id DESC)`
+- `INDEX(store_id, target_type, target_id, created_at DESC)`
+- `INDEX(store_id, actor_id, created_at DESC)`
+- `INDEX(store_id, request_id)`
+
+`request_id` は1リクエストに複数イベントが生じ得るためUNIQUEにしない。`staffs(store_id, id)`にはIssue #4で定義済みのUNIQUE制約を使用する。システム操作で`actor_id`がNULLの場合は、操作元の処理名を`actor_source`へ設定する。Phase 1でシステム操作を実際に発行しない場合も、将来の処理との識別を可能にするためカラムと条件を設計しておく。
+
+### イベント対象と参照整合性
+
+- `action`と`target_type`の組み合わせは、Serviceの固定マッピングで検証する。
+- Phase 1で許可する組み合わせは、次のとおり。
+  - `inventory_count`：`created`, `confirmed`, `corrected`
+  - `inventory_count_line`：`draft_line_removed`
+  - `loss_record`：`created`, `corrected`, `voided`
+  - 上記以外の組み合わせはPhase 1ではServiceで拒否する。DB制約に含まれるその他の`target_type`は将来フェーズ用とする。
+- 下書き明細の削除を監査する`draft_line_removed`では、削除前に対象を検証し、`before_data`へ許可した識別情報を残す。対象自体が削除済みでも履歴を参照できるようにする。
+- 確定済み棚卸、ロス記録、監査から参照されるマスタ・スタッフは原則として物理削除せず、退職・無効化は状態変更で管理する。
+
+### 訂正前後の関連付け
+
+- 棚卸訂正の`target_type`は`inventory_count`、`target_id`は新版IDとする。
+- `before_data`には旧`inventory_count_id`・`revision_no`・`status`のみを保持する。
+- `after_data`には新`inventory_count_id`・`revision_no`・`status`のみを保持する。
+- 食材別の旧数量・新数量・単位・実施者の比較は、両版の`inventory_count_lines`から取得する。
+- ロス訂正の`target_type`は`loss_record`、`target_id`は訂正後IDとする。旧IDは`before_data.loss_record_id`、新IDは`after_data.loss_record_id`に保持し、数量等は`loss_records`から取得する。
+- 単純なロス取消では対象の旧`status`と新`status`のみを必要に応じて保存する。
+- 対象の状態・単位等は正本から取得し、監査JSONの値だけで在庫数量を計算しない。
+
+### JSONの許可リストと機密情報
+
+- 棚卸：`inventory_count_id`, `revision_no`, `status`。
+- ロス：`loss_record_id`, `status`。数量・単位・理由などは業務正本を参照する。
+- マスタ変更：`active`, `responsible_position_id`, `status`等、対象操作に不可欠な非機密項目のみ。
+- `before_data` / `after_data` は汎用のモデル属性ダンプを禁止し、操作種別ごとに明示したキーだけから生成する。
+- 下書き明細削除（`draft_line_removed`）：`before_data`には`inventory_count_id`と`item_id`を保存する。削除明細のIDは`target_id`で記録する。
+- `password`, `token`, `access_token`, `refresh_token`, `id_token`, `authorization`, `cookie`, `email`, `subject`, `issuer`, `name`等の認証情報・個人識別情報は保存しない。
+- `reason`は入力任意。空白文字のみの値は正規化してNULLとするか拒否する。自由記述に秘密情報を含めないよう入力案内し、リクエスト本文全体の自動保存はしない。
+
+### 操作主体・認可・監査の不変性
+
+- スタッフ操作では`actor_kind='staff'`、`actor_id`は認証済みの有効スタッフのIDとし、クライアント値を信用しない。
+- システム処理のみ`actor_kind='system'`・`actor_id=NULL`・`actor_source`必須を許可する。一般APIからsystem主体は指定できない。
+- 退職・利用停止後もスタッフの履歴レコードを残し、過去の監査イベントとの関連を維持する。
+- 一般ユーザー向けの監査UPDATE/DELETE APIは設けず、Railsの通常処理では監査イベントを追記のみとする。
+- 本番DBで所有者／Migrationロールと実行用ロールを分離する場合、実行用ロールには必要な`SELECT`・`INSERT`のみを付与し、`UPDATE`・`DELETE`・`TRUNCATE`を付与しない。
+- DB所有者・管理者による操作まで暗号学的に改ざん不能になることは保証しない。
+- Phase 1では自動削除やアーカイブを行わない。保存期間の運用・バックアップ方針は別途定義し、永久保存を保証する意味ではない。
+
+### トランザクションと在庫再集計
+
+- 確定済み棚卸の訂正は、旧版の確認、新版ヘッダー・完全明細の作成、監査イベントのINSERTを同一トランザクションで実施する。
+- ロス訂正は旧記録の`voided`更新・新記録の作成・監査イベントのINSERTを同一トランザクションで実施する。
+- 監査イベントの保存に失敗したら業務レコードの変更もロールバックする。
+- 楽観ロックと行ロック規約はIssue #6の定義を引き継ぎ、競合時は更新を拒否する。
+- 訂正後の在庫照会・新たに生成するCSV/PDFは最新確定版を使用する。すでに配布した静的ファイルは自動更新しない。
+- `audit_events`自体は在庫の集計に使用せず、二重加算・ロスの二重減算を発生させない。
+
+### stock_adjustmentsの採否
+
+**Phase 1では不採用。** 実測棚卸の入力ミスは版管理で訂正できる。帳簿在庫の手動増減は現時点で独立した台帳・残高算定方式が定義されていないため対象外とし、将来の入庫・移動・ロスとの整合性を検討する段階で再評価する。
+
+### アソシエーション
+
+- `belongs_to :store`
+- `belongs_to :actor, class_name: 'Staff', optional: true`
+- `stores`側：`has_many :audit_events`
+- `staffs`側：`has_many :performed_audit_events, class_name: 'AuditEvent', foreign_key: :actor_id`
+- `target_type`/`target_id`は業務上の論理参照であり、DB上の`belongs_to`の外部キー整合性があると見なさない。
 
 ---
 

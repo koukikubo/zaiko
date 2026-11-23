@@ -541,3 +541,48 @@ Phase 3のIssue #9で検証する。
 | RULE-022 | Service | 同時に同じ確定版を訂正             | 競合を検出し二重更新を防止           |
 | RULE-023 | Service | ロス登録後に実測在庫を取得         | ロス数量を再減算しない               |
 | RULE-024 | Service | 保存途中にエラー発生               | 新旧版が不整合にならずロールバック   |
+
+## 25. 在庫訂正・監査履歴・整合性テスト
+
+**対応Issue：** #7
+
+**対応要件：** FR-03、FR-04、FR-05
+
+| ID        | 分類    | テスト内容                            | 期待結果                                                                                          |
+| --------- | ------- | ------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| AUDIT-001 | DB      | 同一店舗のスタッフでイベント作成      | 成功                                                                                              |
+| AUDIT-002 | DB      | 別店舗のactor_idを指定                | 複合FK制約違反                                                                                    |
+| AUDIT-003 | DB      | actor_kind=staffかつactor_id=NULL     | CHECK制約違反                                                                                     |
+| AUDIT-004 | DB      | actor_kind=systemでactor_sourceを指定 | 成功                                                                                              |
+| AUDIT-005 | DB      | actor_kind=systemでactor_sourceなし   | CHECK制約違反                                                                                     |
+| AUDIT-006 | DB      | 許可されないactor_kindを指定          | CHECK制約違反                                                                                     |
+| AUDIT-007 | DB      | 許可されないactionを指定              | CHECK制約違反                                                                                     |
+| AUDIT-008 | DB      | 許可されないtarget_typeを指定         | CHECK制約違反                                                                                     |
+| AUDIT-009 | DB      | target_id=0または負数                 | CHECK制約違反                                                                                     |
+| AUDIT-010 | DB      | before_dataにJSON配列を指定           | CHECK制約違反                                                                                     |
+| AUDIT-011 | DB      | after_dataにJSON配列を指定            | CHECK制約違反                                                                                     |
+| AUDIT-012 | DB      | reasonに空白のみを指定                | CHECK制約違反                                                                                     |
+| AUDIT-013 | Service | 棚卸初回確定と監査を記録              | 確定版と対応イベントを保存                                                                        |
+| AUDIT-014 | Service | 確定棚卸を訂正                        | 新版のIDと旧版IDを監査に保持                                                                      |
+| AUDIT-015 | Service | 訂正理由を未入力として保存            | 成功・変更者日時を保存                                                                            |
+| AUDIT-016 | Service | 訂正前後の数量を確認                  | 旧版・新版の`inventory_count_lines`を参照して明細ごとに比較可能（監査JSONへ数量明細を複製しない） |
+| AUDIT-017 | Service | 存在しないtarget_idを指定             | 保存拒否                                                                                          |
+| AUDIT-018 | Service | 別店舗のtarget_idを指定               | 保存拒否                                                                                          |
+| AUDIT-019 | Service | actionとtarget_typeの不正な組合せ     | 保存拒否                                                                                          |
+| AUDIT-020 | Service | 棚卸訂正で監査INSERT失敗              | 棚卸新版もロールバック                                                                            |
+| AUDIT-021 | Service | ロス訂正で監査INSERT失敗              | 元ロス取消と訂正版をロールバック                                                                  |
+| AUDIT-022 | Service | 同じ確定棚卸を並行訂正                | 一方のみ成功、イベントも1件                                                                       |
+| AUDIT-023 | Service | ロスの二重取消・訂正競合              | 不正な二重処理を拒否                                                                              |
+| AUDIT-024 | Service | 訂正前の版を開いたまま別の版が確定    | 古い版の保存を拒否                                                                                |
+| AUDIT-025 | Request | 一般スタッフが監査イベントを更新      | APIを提供せず更新不可                                                                             |
+| AUDIT-026 | Request | 一般スタッフが監査イベントを削除      | APIを提供せず削除不可                                                                             |
+| AUDIT-027 | Request | 他店舗の監査履歴を閲覧                | 拒否                                                                                              |
+| AUDIT-028 | Request | 退職済みスタッフの監査履歴を閲覧      | 同一店舗の閲覧権限で過去記録を参照可能                                                            |
+| AUDIT-029 | Service | 機密情報を監査JSONに渡す              | 許可リストで除外                                                                                  |
+| AUDIT-030 | Service | 訂正後の在庫照会                      | 最新確定版のみ採用                                                                                |
+| AUDIT-031 | Service | 訂正後に出力するCSV/PDF用データを取得 | 新しい確定数量・版を使用                                                                          |
+| AUDIT-032 | Service | ロス取消後の在庫照会                  | 既存の実測数量を再減算しない                                                                      |
+| AUDIT-033 | Model   | 同一request_idで複数イベントを保存    | 成功（UNIQUE制約なし）                                                                            |
+| AUDIT-034 | Service | 下書き明細削除と監査を記録            | `target_id`に削除明細ID、`before_data`に棚卸IDと食材IDを保存                                      |
+| AUDIT-035 | DB      | 本番用DBロールでUPDATE/DELETE         | 権限が分離された環境では拒否                                                                      |
+| AUDIT-036 | Service | スタッフ停止・退職後の新規操作        | 拒否、過去監査イベントは不変                                                                      |

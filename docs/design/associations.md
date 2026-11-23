@@ -153,14 +153,18 @@
 | `loss_records`（ロス記録） | `(store_id, voided_by_id)` → `staffs(store_id, id)` | 1対多・任意。取消者を記録する |
 | `loss_records`（ロス記録） | `(store_id, replaces_loss_record_id)` → `loss_records(store_id, id)` | 自己参照・任意。訂正元記録を保持する |
 | `audit_events`（監査履歴） | `store_id` → `stores` | **1対多**。1店舗に複数の操作履歴がある |
-| `audit_events`（監査履歴） | `actor_id` → `staffs` | **1対多・任意**。1人のスタッフによる複数の操作を記録できる |
+| `audit_events`（監査履歴） | `(store_id, actor_id)` → `staffs(store_id, id)` | **1対多・任意**。スタッフ操作時は必須、システム処理時はNULL |
 
 ### 監査対象の扱い
 
-`audit_events.target_type` と `target_id` は、変更対象のモデルとレコードを示す。
-
-この方式は通常の外部キーでは参照整合性を保証できないため、監査対象の特定方法と履歴保持をIssue #7で確定する。
-
+- `audit_events`は`(store_id, actor_id)`から`staffs(store_id, id)`へ複合FKを持つ。`actor_id`はシステム操作時のみNULLとする。
+- `actor_kind='staff'`ではactor_idを必須とし、`actor_kind='system'`ではactor_sourceで処理を特定する。
+- `target_type`・`target_id`は固定コードによる論理参照であり、通常のDB外部キーでは参照先の存在を保証できない。
+- Serviceは操作時点で対象レコードの存在・店舗一致・許可する操作種別を検証する。
+- 棚卸訂正の`target_id`は新確定版のID、旧確定版のIDは`before_data`へ保存する。数量比較は前後の`inventory_count_lines`から行う。
+- ロス訂正の`target_id`は訂正後ロスID、訂正元ロスIDは`before_data`から参照する。
+- 下書き明細の削除監査では、削除前に対象を検証し、必要な識別情報を`before_data`に残す。
+- 監査イベントは追記専用。対象が退職・無効化されても監査履歴は保持する。
 ---
 
 ## 6. Phase 2：承認・在庫移動
