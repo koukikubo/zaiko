@@ -2070,24 +2070,42 @@ Phase 2の実装Issueで確認する。
 
 **責務：** 発注先・作成者・取りまとめポジション・承認状態を管理する。
 
-| カラム名               | 日本語名             | 型         | NULL | DEFAULT | Option         |
-| ---------------------- | -------------------- | ---------- | ---- | ------- | -------------- |
-| `store_id`             | 店舗ID               | bigint     | 不可 | —       | FK → stores    |
-| `supplier_id`          | 仕入先ID             | bigint     | 不可 | —       | FK → suppliers |
-| `ordering_position_id` | 発注担当ポジションID | bigint     | 不可 | —       | FK → positions |
-| `requested_by_id`      | 発注作成スタッフID   | bigint     | 不可 | —       | FK → staffs    |
-| `status`               | 発注状態             | string(30) | 不可 | draft   | CHECK候補      |
-| `expected_delivery_on` | 納品予定日           | date       | 可   | —       |                |
-| `sent_at`              | FAX送信済み日時      | datetime   | 可   | —       |                |
-| `fax_number_snapshot`  | 発注時FAX番号        | string(30) | 可   | —       |                |
-| `lock_version`         | 更新バージョン       | integer    | 不可 | 0       | 楽観ロック     |
+| カラム名                    | 日本語名               | 型         | NULL | DEFAULT | Option                         |
+| --------------------------- | ---------------------- | ---------- | ---- | ------- | ------------------------------ |
+| `store_id`                  | 店舗ID                 | bigint     | 不可 | —       | FK → stores                    |
+| `supplier_id`               | 仕入先ID               | bigint     | 不可 | —       | FK → suppliers                 |
+| `ordering_position_id`      | 発注担当ポジションID   | bigint     | 不可 | —       | FK → positions                 |
+| `requested_by_id`           | 発注作成スタッフID     | bigint     | 不可 | —       | FK → staffs                    |
+| `sending_assignee_id`       | 送信担当スタッフID     | bigint     | 可   | —       | FK → staffs。申請時に必須      |
+| `status`                    | 発注状態               | string(30) | 不可 | draft   | CHECK候補                      |
+| `expected_delivery_on`      | 納品予定日             | date       | 可   | —       |                                |
+| `approval_due_at`           | 承認対応期限           | datetime   | 可   | —       | 申請時に必須                   |
+| `ordering_deadline_at`      | 仕入先への発注期限     | datetime   | 可   | —       | 申請時に必須                   |
+| `current_revision_no`       | 現在の内容版番号       | integer    | 不可 | 0       | 申請前は0。申請時に1           |
+| `task_cycle_no`             | 対応サイクル番号       | integer    | 不可 | 0       | 新しい承認対応の開始ごとに加算 |
+| `approved_revision_no`      | 承認済み内容版番号     | integer    | 可   | —       | 現行版の承認時に設定           |
+| `approved_revision_no`      | 承認済み内容版番号     | integer    | 可   | —       | 現行版の承認時に設定           |
+| `send_prepared_revision_no` | 送信準備中の内容版番号 | integer    | 可   | —       | PDF生成時に設定                |
+| `sent_revision_no`          | 送信済み内容版番号     | integer    | 可   | —       | 送信記録時に設定               |
+| `sent_by_id`                | 送信実行スタッフID     | bigint     | 可   | —       | FK → staffs                    |
+| `sent_at`                   | FAX送信済み日時        | datetime   | 可   | —       |                                |
+| `fax_number_snapshot`       | 発注時FAX番号          | string(30) | 可   | —       |                                |
+| `lock_version`              | 更新バージョン         | integer    | 不可 | 0       | 楽観ロック                     |
 
 **制約・備考**
 
-- 発注・承認・送信・納品の状態遷移を定義する。
-- 異なるポジションからの追加発注依頼を集約する業務を考慮する。
-- 発注確定時点では在庫数量を増加させない。
-- 過去の送信先を保持するためFAX番号のスナップショットを検討する。
+- 状態は `draft` → `pending_approval` → `approved` → `sending` → `sent` とし、承認差戻しは `pending_approval` から `draft` に戻す。納品状態は発注状態と分けて管理する。
+- 申請時に承認対応期限・仕入先への発注期限・送信担当者を確定し、申請後の期限はNULL不可とする。承認期限は仕入先発注期限以前とする。送信担当者は同一店舗の有効スタッフとする。
+- `ordering_position_id`に有効な承認権限を持つスタッフが集約発注全体を承認する。作成者本人は承認できない。依頼元ポジションは提案資格の判定に使う。承認可能者が0人の場合は承認を止め、店舗の有効な管理者へ設定不備を通知する。
+- 申請時に発注明細・仕入先・単位・数量・単価・FAX番号・期限を含む不変スナップショットを `purchase_order_revisions` に作成し、`current_revision_no` を1にする。
+- 発注内容の変更を申請する場合は新しい版番号のスナップショットを作成し、`approved_revision_no` をNULLに戻す。提案の採用も同じ扱いとする。
+- `approved_revision_no` は、`current_revision_no` と一致し、かつ未判断提案がない状態で承認した場合のみ設定する。
+- `draft` は編集・途中保存可能、`pending_approval` と `approved` は送信前提案の受付・判断を可能とする。未判断提案がある間は送信できず、採用で新内容版を作成して `pending_approval` に戻す。不採用なら既存承認を維持する。`sending` は編集・提案を停止し、`sent` は変更不可とする。申請後の直接編集はできず、差戻しで `draft` に戻った後に再申請する。
+- PDF生成時に承認済み現行版を `send_prepared_revision_no` に固定する。送信準備中は提案・内容変更を拒否し、中止操作で準備版を解除してから再開する。
+- FAX送信記録では `sent_revision_no` を送信準備版と一致させ、`sent_by_id`・`sent_at`・FAX番号スナップショットを保持する。手動記録は実際に送信した紙面の物理的同一性までは保証しないため、PDFに版番号を印字し操作時に同一版を確認する。
+- 送信可否は同一発注書のロック／楽観ロック下で再検証する。現行版の承認済み、未判断提案なし、有効明細1件以上、未送信、送信準備版と現行版の一致をすべて満たすこと。期限超過は通知対象とするが、発注自体は送信可能とする。
+- 送信後の編集・取消は拒否する。送信後変更・取消の別処理は後続Issueとする。
+- 対応一覧の承認待ちは承認可能者全員を候補にし、承認済み未送信は `sending_assignee_id` を次の対応者とする。期限超過通知も同じ宛先判定を用い、自動承認しない。承認可能者が0人なら店舗の有効な管理者に通知し、承認者の設定が完了するまで承認・送信を止める。
 
 ## 20. `purchase_order_lines`（発注明細）
 
@@ -2097,36 +2115,150 @@ Phase 2の実装Issueで確認する。
 | -------------------------- | -------------------- | ------------- | ---- | ------- | -------------------- |
 | `purchase_order_id`        | 発注書ID             | bigint        | 不可 | —       | FK → purchase_orders |
 | `supplier_item_id`         | 仕入先別商品ID       | bigint        | 不可 | —       | FK → supplier_items  |
-| `requested_by_position_id` | 依頼元ポジションID   | bigint        | 可   | —       | FK → positions       |
 | `ordered_quantity`         | 発注数量             | decimal(12,3) | 不可 | —       | CHECK > 0            |
 | `order_unit_snapshot`      | 発注時単位           | string(30)    | 不可 | —       |                      |
 | `base_qty_snapshot`        | 発注時の単位換算数量 | decimal(12,3) | 不可 | —       | CHECK > 0            |
 | `unit_price`               | 単価                 | decimal(12,2) | 可   | —       |                      |
 | `memo`                     | 明細備考             | text          | 可   | —       |                      |
+| `cancelled_at`             | 論理取消日時         | datetime      | 可   | —       | 取消時に設定         |
+| `cancelled_by_id`          | 取消実行スタッフID   | bigint        | 可   | —       | FK → staffs          |
+| `cancellation_reason_code` | 取消理由コード       | string(30)    | 可   | —       | 許可リスト           |
 
 **制約・備考**
 
-- `CHECK(ordered_quantity > 0)`
-- 依頼元が複数の場合の集約方法はPhase 2で検討する。
-- 数量・単位換算情報は発注後にマスタ変更されても変化しないよう保持する。
+- `CHECK(ordered_quantity > 0)` は取消明細にも維持し、取消時に数量を0へ変更しない。
+- `cancelled_at` がNULLなら `cancelled_by_id` と `cancellation_reason_code` もNULL、取消済みなら3項目すべて必須とする。
+- `cancel_line`提案の採用時は、判断者を`cancelled_by_id`、提案の`reason_code`を`cancellation_reason_code`、判断日時を`cancelled_at`に保存する。
+- 取消明細は物理削除せず、依頼・提案・承認対象の参照を維持する。発注数量集計・PDF・送信対象・納品照合から除外する。
+- 取消は承認済み版を無効にして新しい内容版を作り、再承認を必要とする。
+- 数量・単位換算情報は内容版スナップショットに保持する。
 
-## 21. `order_approval_events`（発注承認履歴）
+## 21. `purchase_order_requests`（発注依頼明細）
+
+**責務：** 発注書に集約する前の依頼元・依頼数量を個別に保持する。
+
+| カラム名                   | 日本語名           | 型            | NULL | DEFAULT | Option                        |
+| -------------------------- | ------------------ | ------------- | ---- | ------- | ----------------------------- |
+| `store_id`                 | 店舗ID             | bigint        | 不可 | —       | FK → stores                   |
+| `purchase_order_line_id`   | 集約後の発注明細ID | bigint        | 不可 | —       | 複合FK → purchase_order_lines |
+| `requested_by_position_id` | 依頼元ポジションID | bigint        | 不可 | —       | 複合FK → positions            |
+| `requested_by_id`          | 依頼スタッフID     | bigint        | 不可 | —       | 複合FK → staffs               |
+| `requested_quantity`       | 依頼数量           | decimal(12,3) | 不可 | —       | CHECK > 0                     |
+| `requested_unit_snapshot`  | 依頼時単位         | string(30)    | 不可 | —       |                               |
+| `created_at`               | 依頼日時           | datetime      | 不可 | —       |                               |
+
+**制約・備考**
+
+- 1レコードは、1ポジションからの1食材に対する1件の依頼を表す。
+- 依頼元ポジション・依頼スタッフ・依頼数量を、集約後も個別に参照できる。
+- `requested_quantity`は依頼時の数量、`purchase_order_lines.ordered_quantity`は仕入先へ発注する数量として区別する。
+- 発注数量を調整しても、元の依頼数量を上書きしない。
+
+## 22. `purchase_order_change_proposals`（発注変更提案）
+
+**責務：** 仕入先への送信前に寄せられた発注内容への提案と、その判断結果を記録する。
+
+| カラム名                  | 日本語名                 | 型            | NULL | DEFAULT | Option                             |
+| ------------------------- | ------------------------ | ------------- | ---- | ------- | ---------------------------------- |
+| `store_id`                | 店舗ID                   | bigint        | 不可 | —       | FK → stores                        |
+| `purchase_order_id`       | 発注書ID                 | bigint        | 不可 | —       | 複合FK → purchase_orders           |
+| `purchase_order_line_id`  | 対象発注明細ID           | bigint        | 可   | —       | 同一発注書の明細。追加提案ではNULL |
+| `supplier_item_id`        | 提案対象の仕入先別商品ID | bigint        | 不可 | —       | 複合FK → supplier_items            |
+| `proposal_type`           | 提案種別                 | string(30)    | 不可 | —       | CHECK候補                          |
+| `proposed_quantity`       | 提案数量                 | decimal(12,3) | 可   | —       | CHECK候補                          |
+| `order_unit_snapshot`     | 提案時の発注単位         | string(30)    | 不可 | —       |                                    |
+| `reason_code`             | 提案理由コード           | string(30)    | 不可 | —       | 許可リスト                         |
+| `comment`                 | 提案補足                 | string(100)   | 可   | —       | 文字数上限                         |
+| `proposed_by_id`          | 提案スタッフID           | bigint        | 不可 | —       | 複合FK → staffs                    |
+| `proposed_by_position_id` | 提案時ポジションID       | bigint        | 不可 | —       | 複合FK → positions                 |
+| `status`                  | 提案状態                 | string(30)    | 不可 | pending | CHECK候補                          |
+| `decided_by_id`           | 判断スタッフID           | bigint        | 可   | —       | 複合FK → staffs                    |
+| `decision_comment`        | 判断補足                 | string(100)   | 可   | —       | 文字数上限                         |
+| `decided_at`              | 判断日時                 | datetime      | 可   | —       |                                    |
+| `created_at`              | 提案日時                 | datetime      | 不可 | —       |                                    |
+| `updated_at`              | 更新日時                 | datetime      | 不可 | —       | 判断結果の記録時に更新             |
+
+**制約・備考**
+
+- `proposal_type`は`add_item`、`change_quantity`、`cancel_line`のみを許可する。
+- `status`は`pending`、`accepted`、`rejected`のみを許可する。
+- `add_item`では`purchase_order_line_id`をNULL、`proposed_quantity`を0より大きい値とする。
+- `change_quantity`では`purchase_order_line_id`を必須、`proposed_quantity`を0より大きい値とする。
+- `cancel_line`では`purchase_order_line_id`を必須、`proposed_quantity`をNULLとする。
+- `pending`では`decided_by_id`と`decided_at`をNULLとし、`accepted`または`rejected`では両方を必須とする。
+- 提案内容・提案者・提案時ポジション・提案日時は、判断後も変更しない。
+- 提案者は提案できるが、発注内容を直接変更したり、その提案を承認したりはできない。
+- 提案の採用・不採用は、当該発注を承認でき、かつ提案者本人ではないスタッフが判断する。
+- 提案が不採用の場合は、判断理由を`decision_comment`に記録する。
+- 提案対象の発注書・発注明細・商品・スタッフ・ポジションは同一店舗に属することを検証する。
+- `purchase_order_line_id`がある場合、その明細が`purchase_order_id`に属し、`supplier_item_id`も一致することを検証する。
+- `add_item`では、提案する`supplier_item_id`の商品を発注書の仕入先が取り扱っていることを検証する。
+- 提案採用で発注内容が変わった場合は、変更後の内容を再承認する。
+- 仕入先への送信後はこの提案を使わず、発注変更・取消の別処理として記録する。
+
+## 23. `order_approval_events`（発注承認履歴）
 
 **責務：** 承認・差戻し等の操作履歴を保存する。
 
-| カラム名            | 日本語名             | 型         | NULL | DEFAULT | Option               |
-| ------------------- | -------------------- | ---------- | ---- | ------- | -------------------- |
-| `purchase_order_id` | 発注書ID             | bigint     | 不可 | —       | FK → purchase_orders |
-| `actor_id`          | 操作スタッフID       | bigint     | 不可 | —       | FK → staffs          |
-| `action`            | 操作種別             | string(30) | 不可 | —       |                      |
-| `comment`           | コメント・差戻し理由 | text       | 可   | —       |                      |
-| `created_at`        | 操作日時             | datetime   | 不可 | —       |                      |
+| カラム名            | 日本語名             | 型         | NULL | DEFAULT | Option                                        |
+| ------------------- | -------------------- | ---------- | ---- | ------- | --------------------------------------------- |
+| `purchase_order_id` | 発注書ID             | bigint     | 不可 | —       | FK → purchase_orders                          |
+| `revision_no`       | 対象内容版番号       | integer    | 不可 | —       | FK相当 → 同一発注書のpurchase_order_revisions |
+| `actor_id`          | 操作スタッフID       | bigint     | 不可 | —       | FK → staffs                                   |
+| `action`            | 操作種別             | string(30) | 不可 | —       | approve / return                              |
+| `comment`           | コメント・差戻し理由 | text       | 可   | —       |                                               |
+| `created_at`        | 操作日時             | datetime   | 不可 | —       |                                               |
 
 **制約・備考**
 
-- 承認・差戻し履歴を追記して保持する。
-- 自己承認を原則禁止する。
-- スタッフの有効な承認権限を承認処理時に確認する。
+- 承認・差戻し履歴を追記して保持し、必ず判断した `revision_no` を記録する。
+- `action=approve` はその版が当時の現行版で、未判断提案がない場合のみ許可する。
+- 発注書の `ordering_position_id` に対する有効な承認権限を処理時に確認し、発注作成者本人の承認は拒否する。
+- 内容版が更新された後も過去の承認イベントは削除せず、現在版の承認済み判定には使用しない。
+
+### 発注内容版（`purchase_order_revisions`）
+
+**責務：** 申請・承認・PDF・FAX送信の対象となった発注内容を版ごとに不変保存する。
+
+| カラム名            | 日本語名                 | 型       | NULL | DEFAULT | Option                                                      |
+| ------------------- | ------------------------ | -------- | ---- | ------- | ----------------------------------------------------------- |
+| `purchase_order_id` | 発注書ID                 | bigint   | 不可 | —       | FK → purchase_orders                                        |
+| `revision_no`       | 内容版番号               | integer  | 不可 | —       | 発注書内で1から連番                                         |
+| `content_snapshot`  | 発注内容スナップショット | jsonb    | 不可 | —       | 明細・商品名・数量・単位・単価・取消状態・仕入先・FAX・期限 |
+| `created_by_id`     | 版作成スタッフID         | bigint   | 不可 | —       | FK → staffs                                                 |
+| `created_at`        | 版作成日時               | datetime | 不可 | —       |                                                             |
+
+**制約・備考**
+
+- `UNIQUE(purchase_order_id, revision_no)` とし、`revision_no > 0` とする。
+- 申請時・発注内容変更時にスナップショット全体を保存する。明細行のID、食材名、仕入先商品ID、数量、発注単位、換算量、単価、取消状態を含める。
+- いったん作成したスナップショットは更新・削除しない。訂正は新しい版を作成する。
+- `order_approval_events.revision_no` は同じ発注書の版を参照し、承認判断の根拠を固定する。
+- PDFは特定の版から生成し、表示上も内容版番号を識別可能にする。
+- `purchase_orders.current_revision_no`・`approved_revision_no`・`send_prepared_revision_no`・`sent_revision_no` は同じ発注書内の版を指す。複合FKまたは同等のService検証を行う。
+
+### 発注期限通知（`order_task_notifications`）
+
+**責務：** 期限超過の発注タスクを担当者へ通知した記録を保持し、同じ期限・担当への重複通知を防ぐ。
+
+| カラム名            | 日本語名         | 型         | NULL | DEFAULT | Option                                   |
+| ------------------- | ---------------- | ---------- | ---- | ------- | ---------------------------------------- |
+| `purchase_order_id` | 発注書ID         | bigint     | 不可 | —       | FK → purchase_orders                     |
+| `recipient_id`      | 通知先スタッフID | bigint     | 不可 | —       | FK → staffs                              |
+| `task_type`         | 対応種別         | string(30) | 不可 | —       | approval / send                          |
+| `task_cycle_no`     | 対応サイクル番号 | integer    | 不可 | —       | 発注書の番号を保存                       |
+| `deadline_at`       | 対応期限         | datetime   | 不可 | —       | 発注書に設定された期限のスナップショット |
+| `notified_at`       | 通知日時         | datetime   | 不可 | —       |                                          |
+
+**制約・備考**
+
+- 対応サイクルごとに`task_cycle_no`を採番する。
+- `UNIQUE(purchase_order_id, task_type, task_cycle_no, recipient_id, deadline_at)` とし、同じ対応サイクル・担当者・期限への通知を二重登録しない。
+- 差戻し後の再申請など、新しい対応サイクルでは新しい番号を使う。
+- 対応一覧自体は発注状態から都度算出し、本テーブルは期限超過のアプリ内通知記録に用いる。
+- 期限または担当者が変更されれば異なる通知キーとなり、新たな通知を許可する。
+- `approval` の宛先は、発注作成者を除く `ordering_position_id` の有効な承認権限者全員とする。該当者がいない場合のエスカレーション先は店舗の有効な管理者とし、承認権限者が設定されるまで承認は行えない。`send` の宛先は有効な `sending_assignee_id` とする。
+- Phase 2の通知手段はアプリ内通知とする。期限超過でもタスクを完了でき、自動承認・自動送信はしない。
 
 ## 22. `receipts`（納品・検品記録）
 
