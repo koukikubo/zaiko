@@ -1,111 +1,22 @@
 # ZAIKO ER図
 
-- バージョン：0.1
-- 対応Issue：#3
-- ステータス：レビュー前
+- バージョン：0.2
+- 対応Issue：#3、#7、#10
+- ステータス：Issue単位で更新
 - 関連資料：[テーブル定義書](./tables.md) / [アソシエーション定義書](./associations.md)
 
 ## 1. 設計方針
 
-- 全体のテーブル候補数は26件。
-- Phase 1：13テーブル
-- Phase 2：9テーブル
-- Phase 3：4テーブル
-- `auth_sessions` はPhase 3で実装する。
-- 食材の使用ポジションと棚卸責任ポジションを分ける。
-- 食材の物理在庫は食材×保管場所を基準に管理する。
-- 棚卸責任者と実際の棚卸実施者を区別する。
+- ER図は開発中のIssueで確認するテーブルと関連に絞って掲載する。
+- Issueが完了するごとに、確定したテーブルと関連を追加する。
+- Phase 1の図は、Issue #7までに確定した在庫管理の関連を示す。
+- Phase 2の図は、Issue #10で扱う発注作成・集約・変更提案・承認・送信の関連を示す。
+- 納品・検品など後続Issueで扱うテーブルは、そのIssueで図に追加する。
+- 詳細なカラム、FK、複合FK、UNIQUE制約は `tables.md` と `associations.md` を正本とする。
 
-本ER図は論理設計案であり、MigrationやDB構造は未確定。
+本ER図は論理設計を確認するための図であり、MigrationやDB構造の完成を意味しない。
 
-## 2. 全体ER図（26テーブル）
-
-```mermaid
-erDiagram
-    stores ||--o{ staffs : employs
-    stores ||--o{ positions : defines
-    stores ||--o{ items : manages
-    stores ||--o{ stock_locations : has
-    stores ||--o{ position_items : defines_usage
-    stores ||--o{ stock_location_items : defines_stock_targets
-    stores ||--o{ inventory_counts : records
-    stores ||--o{ loss_records : records
-    stores ||--o{ audit_events : logs
-    stores ||--o{ suppliers : contracts
-    stores ||--o{ purchase_orders : orders
-    stores ||--o{ stock_transfers : transfers
-    stores ||--o{ busy_periods : schedules
-
-    staffs ||--o{ oauth_identities : linked_to
-    staffs ||--o{ auth_sessions : sessions
-    staffs ||--o{ position_assignments : assigned
-    positions ||--o{ position_assignments : has
-    staffs |o--o{ position_assignments : registered_by
-
-    positions ||--o{ position_items : uses
-    items ||--o{ position_items : used_by
-
-    stock_locations ||--o{ stock_location_items : contains
-    items ||--o{ stock_location_items : stocked
-    positions ||--o{ stock_location_items : responsible
-
-    stock_locations ||--o{ inventory_counts : counted_at
-    staffs ||--o{ inventory_counts : opened_by
-    staffs |o--o{ inventory_counts : confirmed_by
-
-    inventory_counts ||--o{ inventory_count_lines : contains
-    stock_location_items ||--o{ inventory_count_lines : measured
-    staffs |o--o{ inventory_count_lines : counted_by
-    staffs |o--o{ inventory_count_lines : entered_by
-    positions |o--o{ inventory_count_lines : responsibility_snapshot
-
-    stock_location_items ||--o{ loss_records : lost
-    staffs ||--o{ loss_records : reported_by
-
-    staffs |o--o{ audit_events : actor
-
-    positions ||--o{ position_approval_authorizations : approval_scope
-    staffs ||--o{ position_approval_authorizations : authorized_staff
-    staffs ||--o{ position_approval_authorizations : granted_by
-
-    items ||--o{ stock_transfers : transferred
-    stock_locations ||--o{ stock_transfers : from_location
-    stock_locations ||--o{ stock_transfers : to_location
-    staffs ||--o{ stock_transfers : moved_by
-
-    suppliers ||--o{ supplier_items : offers
-    items ||--o{ supplier_items : purchased_as
-    suppliers ||--o{ supplier_closures : closed_on
-    suppliers ||--o{ supplier_delivery_rules : delivery_rules
-
-    suppliers ||--o{ purchase_orders : receives
-    positions ||--o{ purchase_orders : ordering_position
-    staffs ||--o{ purchase_orders : requested_by
-
-    purchase_orders ||--o{ purchase_order_lines : contains
-    supplier_items ||--o{ purchase_order_lines : ordered_item
-    positions |o--o{ purchase_order_lines : requested_position
-
-    purchase_orders ||--o{ order_approval_events : approval_events
-    staffs ||--o{ order_approval_events : approval_actor
-
-    purchase_orders ||--o{ receipts : delivered
-    staffs ||--o{ receipts : received_by
-
-    receipts ||--o{ receipt_lines : contains
-    purchase_order_lines ||--o{ receipt_lines : fulfills
-    stock_locations ||--o{ receipt_lines : stored_at
-```
-
-### 全体図の注意点
-
-- `auth_sessions` はPhase 3の候補として表示する。
-- `stock_location_items` はPhase 1の採用方針。
-- 同じ2テーブルを複数の外部キーで関連付ける場合、関連名を分ける。
-- `audit_events` の監査対象は多態的な参照候補であり、通常のFK線は描いていない。
-- 26テーブルの最終的なカラム・FK・必須性は後続Issueで確定する。
-
-## 3. Phase 1 ER図（13テーブル）
+## 2. Phase 1 ER図（Issue #7までに確定した範囲）
 
 ```mermaid
 erDiagram
@@ -211,52 +122,70 @@ erDiagram
 
 上記のカラム表示は重要な関連・数量の抜粋であり、全カラムの正本は `tables.md` とする。
 
-## 4. 特に重要な関連
+上記のカラム表示は重要な関連・数量の抜粋であり、全カラムの正本は `tables.md` とする。
+
+## 3. Phase 2：発注作成・依頼集約（Issue #10）
+
+この図では、仕入先別商品を発注明細にまとめ、依頼元ごとの依頼数量を保持する関連を示す。
+
+```mermaid
+erDiagram
+    suppliers ||--o{ supplier_items : offers
+    items ||--o{ supplier_items : listed_as
+    suppliers ||--o{ purchase_orders : receives
+    purchase_orders ||--o{ purchase_order_lines : contains
+    supplier_items ||--o{ purchase_order_lines : ordered_item
+    purchase_order_lines ||--o{ purchase_order_requests : has_requests
+    positions ||--o{ purchase_order_requests : requested_from
+    staffs ||--o{ purchase_order_requests : requested_by
+```
+
+## 4. Phase 2：提案・承認・内容版・期限通知（Issue #10）
+
+この図では、提案判断と承認・送信の根拠になる発注内容版、期限通知の関連を示す。取消明細は `purchase_order_lines` に論理状態を保持し、元の依頼・提案・内容版との参照を維持する。
+
+```mermaid
+erDiagram
+    purchase_orders ||--o{ purchase_order_change_proposals : receives
+    purchase_order_lines |o--o{ purchase_order_change_proposals : targets
+    supplier_items ||--o{ purchase_order_change_proposals : proposed_item
+    purchase_orders ||--o{ purchase_order_revisions : versions
+    purchase_orders ||--o{ order_approval_events : approval_history
+    purchase_orders ||--o{ order_task_notifications : deadline_notifications
+```
+
+提案者・判断者・承認者・通知先スタッフとの関連、および各FKの店舗一致条件は `tables.md` と `associations.md` を参照する。図は主要な業務関係に絞っている。
+
+## 5. 特に重要な関連
 
 ### 食材と保管場所
 
 `items` と `stock_locations` は、`stock_location_items` を介した多対多。
 
-1種類の食材を複数の場所に保管できる。
-
-同じ食材を複数ポジションが使用しても、在庫の二重計上をしない。
+1種類の食材を複数の場所に保管できる。同じ食材を複数ポジションが使用しても、在庫の二重計上をしない。
 
 ### 棚卸責任と実施者
 
-`stock_location_items.responsible_position_id` は通常の責任ポジションを示す。
-
-`inventory_count_lines.counted_by_id` は実際に数えたスタッフを示す。
-
-後輩が代わりに棚卸した場合も、実施者を記録する。
+`stock_location_items.responsible_position_id` は通常の責任ポジションを示す。`inventory_count_lines.counted_by_id` は実際に数えたスタッフを示す。後輩が代わりに棚卸した場合も、実施者を記録する。
 
 ### 棚卸と明細
 
-`inventory_counts` と `inventory_count_lines` は1対多。
+`inventory_counts` と `inventory_count_lines` は1対多。1回の棚卸に複数の食材明細が紐づく。未確認の数量NULLと実測数量0は区別する。
 
-1回の棚卸に複数の食材明細が紐つく。
-未確認の数量NULLと実測数量0は区別する。
+### 発注と内容版
 
-### 発注と納品
-
-発注書から複数の発注明細を持てる。
-1件の発注に対して複数回の分納・検品が可能。
-在庫に反映するのは検品確定済みの数量のみ。
+1件の発注書は複数の発注明細・依頼・変更提案・内容版・承認履歴・期限通知を持てる。承認・PDF・送信は同一の内容版番号を参照し、明細取消後も履歴参照を維持する。送信後の変更・取消は後続Issueで扱う。
 
 ### 店舗境界と複合FK
 
-- `position_items` と `stock_location_items` は `store_id` を保持する。
-- `position_items` は同一店舗の `positions` と `items` のみ参照できる。
-- `stock_location_items` は同一店舗の `stock_locations`、`items`、`positions` のみ参照できる。
-- 店舗の一致は `(store_id, 関連先ID)` の複合FKで保証する。
-- 詳細なUNIQUE制約とFK制約は `tables.md` を正本とする。
+- 関連レコードは同じ店舗に属する必要がある。
+- 店舗一致、発注書と明細の所属、仕入先と仕入先別商品の一致をDB制約またはService検証で保証する。
+- 詳細なUNIQUE制約とFK制約は `tables.md` と `associations.md` を正本とする。
 
-## 5. 未確定事項
+## 6. 後続Issueで図に追加する範囲
 
-- Phase 1の棚卸ヘッダーの単位と複数回実施のルール
-- 保管場所別管理食材の責任ポジション変更履歴
-- 一部のFKの任意・必須条件
-- 複数ポジションからの発注依頼の履歴管理
-- 在庫訂正専用テーブルの必要性
+- 発注書に対する納品・検品の実績（`receipts`、`receipt_lines`）
+- 仕入先休業日・納品ルール
+- 在庫移動・繁忙期分析・追加セッション管理
 
-詳細カラム・NULL・DEFAULT・UNIQUE・CHECK・INDEXは
-`tables.md` で管理し、Issue #4〜#8で確定する。
+これらはIssueごとにテーブル間の関連を確認してから追加する。
