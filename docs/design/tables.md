@@ -2084,7 +2084,6 @@ Phase 2の実装Issueで確認する。
 | `current_revision_no`       | 現在の内容版番号       | integer    | 不可 | 0       | 申請前は0。申請時に1           |
 | `task_cycle_no`             | 対応サイクル番号       | integer    | 不可 | 0       | 新しい承認対応の開始ごとに加算 |
 | `approved_revision_no`      | 承認済み内容版番号     | integer    | 可   | —       | 現行版の承認時に設定           |
-| `approved_revision_no`      | 承認済み内容版番号     | integer    | 可   | —       | 現行版の承認時に設定           |
 | `send_prepared_revision_no` | 送信準備中の内容版番号 | integer    | 可   | —       | PDF生成時に設定                |
 | `sent_revision_no`          | 送信済み内容版番号     | integer    | 可   | —       | 送信記録時に設定               |
 | `sent_by_id`                | 送信実行スタッフID     | bigint     | 可   | —       | FK → staffs                    |
